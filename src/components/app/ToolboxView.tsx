@@ -50,6 +50,13 @@ const initialOverview: AutonomyOverview = {
     self_heal_project: { requestRole: 'approver', approveRole: 'admin' },
   },
   currentUserRole: 'operator',
+  browser: {
+    sessionOpen: false,
+    headless: false,
+    artifactsDir: '',
+    recentTrace: [],
+    currentUrl: '',
+  },
   relay: {
     allowedCommands: [],
     allowedRoots: [],
@@ -161,6 +168,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
   const approvalPolicyEntries = useMemo(
     () => (Object.entries(overview.approvalPolicy) as Array<[ApprovalActionType, { requestRole: UserRole; approveRole: UserRole }]>),
     [overview.approvalPolicy]
+  );
+  const browserTracePreview = useMemo(
+    () => overview.browser.recentTrace.slice(0, 6),
+    [overview.browser.recentTrace]
   );
 
   const refreshOverview = async (silent = false) => {
@@ -419,6 +430,69 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             <p className="text-sm text-zinc-500">Crawls stop at {overview.limits.maxCrawlPages} pages and browser fetches stay bounded for stability.</p>
           </Card>
         </div>
+
+        <Card className="p-6 lg:p-8 space-y-6 border-white/10 bg-white/[0.02]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight">Browser Operations</h3>
+              <p className="text-sm text-zinc-500 mt-2">Shared Playwright state, recent navigation health, and failure artifacts live here so web automation is easier to recover when a page gets weird.</p>
+            </div>
+            <Badge color={overview.browser.sessionOpen ? 'lime' : 'rose'}>
+              {overview.browser.sessionOpen ? 'Session Open' : 'Session Idle'}
+            </Badge>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Mode</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">{overview.browser.headless ? 'Headless' : 'Visible Browser'}</div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Last Action</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">
+                {overview.browser.lastActionAt ? new Date(overview.browser.lastActionAt).toLocaleString() : 'No browser actions yet'}
+              </div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Current URL</div>
+              <div className="mt-2 text-sm text-zinc-200 break-all">{overview.browser.currentUrl || 'No active page'}</div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Last Error</div>
+              <div className="mt-2 text-sm text-zinc-200">{overview.browser.lastError || 'No browser failures recorded recently'}</div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4">
+            {browserTracePreview.map((entry) => (
+              <Card key={entry.id} className="p-5 border-white/10 bg-black/20">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Badge color={entry.status === 'success' ? 'lime' : 'rose'}>{entry.status}</Badge>
+                    <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">{entry.action}</span>
+                    <span className="text-xs text-zinc-500">{new Date(entry.createdAt).toLocaleString()}</span>
+                  </div>
+                  {entry.url && (
+                    <div className="text-sm text-zinc-300 break-all">
+                      URL: <span className="text-white font-semibold">{entry.url}</span>
+                    </div>
+                  )}
+                  {entry.error && (
+                    <div className="text-sm text-cyber-rose">{entry.error}</div>
+                  )}
+                  {entry.artifactPath && (
+                    <div className="text-sm text-zinc-300 break-all">
+                      Artifact: <span className="text-white font-semibold">{entry.artifactPath}</span>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+            {!isLoadingOverview && browserTracePreview.length === 0 && (
+              <div className="text-sm text-zinc-500">No browser trace yet. Once the agents navigate, click, type, or fail on a page, the recent session history will show up here.</div>
+            )}
+          </div>
+        </Card>
 
         <Card className="p-6 lg:p-8 space-y-6 border-white/10 bg-white/[0.02]">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

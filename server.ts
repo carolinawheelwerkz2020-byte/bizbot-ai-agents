@@ -89,6 +89,18 @@ type PendingApproval = {
   result?: unknown;
 };
 
+type BrowserTraceEntry = {
+  id: string;
+  action: string;
+  status: "success" | "error";
+  createdAt: string;
+  url?: string;
+  title?: string;
+  details?: Record<string, unknown>;
+  error?: string;
+  artifactPath?: string;
+};
+
 type StoredRunSummary = {
   id: string;
   agentId: string;
@@ -137,11 +149,14 @@ const HEALING_RECIPES_PATH = path.join(process.cwd(), ".bizbot-healing-recipes.j
 const APPROVALS_PATH = path.join(process.cwd(), ".bizbot-approvals.json");
 const RUN_HISTORY_PATH = path.join(process.cwd(), ".bizbot-run-history.json");
 const RUN_TEMPLATES_PATH = path.join(process.cwd(), ".bizbot-run-templates.json");
+const BROWSER_TRACE_PATH = path.join(process.cwd(), ".bizbot-browser-trace.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
 const MAX_HEALING_STEPS = 12;
 const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
 const BROWSER_ARTIFACTS_DIR = path.join(process.cwd(), ".browser-artifacts");
+const MAX_BROWSER_TRACE_ENTRIES = 60;
+const BROWSER_ACTION_TIMEOUT_MS = 20_000;
 
 const ROLE_RANK: Record<UserRole, number> = {
   operator: 1,
@@ -390,6 +405,21 @@ function readApprovals() {
 
 function writeApprovals(approvals: PendingApproval[]) {
   writeJsonArrayFile(APPROVALS_PATH, approvals);
+}
+
+function readBrowserTrace() {
+  return readJsonArrayFile<BrowserTraceEntry>(BROWSER_TRACE_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.action === "string" && typeof entry.status === "string",
+  );
+}
+
+function writeBrowserTrace(entries: BrowserTraceEntry[]) {
+  writeJsonArrayFile(BROWSER_TRACE_PATH, entries);
+}
+
+function appendBrowserTrace(entry: BrowserTraceEntry) {
+  const next = [entry, ...readBrowserTrace()].slice(0, MAX_BROWSER_TRACE_ENTRIES);
+  writeBrowserTrace(next);
 }
 
 function readRunHistory() {
@@ -1076,6 +1106,94 @@ function ensureBrowserArtifactsDir() {
   fs.mkdirSync(BROWSER_ARTIFACTS_DIR, { recursive: true });
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function captureBrowserArtifact(prefix: string, fullPage = true) {
+  ensureBrowserArtifactsDir();
+  const page = await ensureBrowserPage();
+  const filename = `${prefix}-${Date.now()}.png`;
+  const outputPath = path.join(BROWSER_ARTIFACTS_DIR, filename);
+  await page.screenshot({
+    path: outputPath,
+    fullPage,
+  });
+  return outputPath;
+}
+
+async function getBrowserSnapshot() {
+  if (!browserPageSession || browserPageSession.isClosed()) {
+    return {
+      url: "",
+      title: "",
+    };
+  }
+
+  return {
+    url: browserPageSession.url(),
+    title: await browserPageSession.title().catch(() => ""),
+  };
+}
+
+async function recordBrowserTrace(entry: Omit<BrowserTraceEntry, "id" | "createdAt">) {
+  const snapshot = await getBrowserSnapshot();
+  appendBrowserTrace({
+    id: `browser-trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    url: entry.url ?? snapshot.url,
+    title: entry.title ?? snapshot.title,
+    ...entry,
+  });
+}
+
+async function runBrowserAction<T>(
+  action: string,
+  details: Record<string, unknown>,
+  runner: () => Promise<T>,
+) {
+  try {
+    const result = await withTimeout(
+      runner(),
+      BROWSER_ACTION_TIMEOUT_MS,
+      `Browser action timed out after ${Math.round(BROWSER_ACTION_TIMEOUT_MS / 1000)} seconds.`,
+    );
+    await recordBrowserTrace({
+      action,
+      status: "success",
+      details,
+    });
+    return result;
+  } catch (error) {
+    let artifactPath: string | undefined;
+    try {
+      artifactPath = await captureBrowserArtifact(`browser-error-${action}`);
+    } catch {
+      artifactPath = undefined;
+    }
+
+    const message = error instanceof Error ? error.message : "Unknown browser automation error.";
+    await recordBrowserTrace({
+      action,
+      status: "error",
+      details,
+      error: message,
+      artifactPath,
+    });
+    throw new Error(artifactPath ? `${message} Artifact: ${artifactPath}` : message);
+  }
+}
+
 function extractHtmlTitle(html: string) {
   const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return match?.[1]?.replace(/\s+/g, " ").trim() || "";
@@ -1185,54 +1303,54 @@ async function ensureBrowserPage() {
 }
 
 async function browserReadState() {
-  const page = await ensureBrowserPage();
-  const title = await page.title().catch(() => "");
-  const url = page.url();
-  const textContent = await page.locator("body").innerText().catch(() => "");
-  return {
-    title,
-    url,
-    content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
-  };
+  return runBrowserAction("browser_read", {}, async () => {
+    const page = await ensureBrowserPage();
+    const title = await page.title().catch(() => "");
+    const url = page.url();
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url,
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
 }
 
 async function browserListInteractives() {
-  const page = await ensureBrowserPage();
-  return page.evaluate(() => {
-    const nodes = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [onclick]'));
-    return nodes.slice(0, 100).map((node, index) => {
-      const element = node as HTMLElement;
-      const tag = element.tagName.toLowerCase();
-      const id = element.id ? `#${element.id}` : '';
-      const classes = element.className && typeof element.className === 'string'
-        ? `.${element.className.trim().split(/\s+/).slice(0, 3).join('.')}`
-        : '';
-      const selector = id || `${tag}${classes}`;
-      const text = (element.innerText || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim();
-      return {
-        index,
-        tag,
-        selector,
-        text: text.slice(0, 120),
-      };
+  return runBrowserAction("browser_list_interactives", {}, async () => {
+    const page = await ensureBrowserPage();
+    return page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [onclick]'));
+      return nodes.slice(0, 100).map((node, index) => {
+        const element = node as HTMLElement;
+        const tag = element.tagName.toLowerCase();
+        const id = element.id ? `#${element.id}` : '';
+        const classes = element.className && typeof element.className === 'string'
+          ? `.${element.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+          : '';
+        const selector = id || `${tag}${classes}`;
+        const text = (element.innerText || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim();
+        return {
+          index,
+          tag,
+          selector,
+          text: text.slice(0, 120),
+        };
+      });
     });
   });
 }
 
 async function browserScreenshot(fullPage?: boolean) {
-  ensureBrowserArtifactsDir();
-  const page = await ensureBrowserPage();
-  const filename = `browser-shot-${Date.now()}.png`;
-  const outputPath = path.join(BROWSER_ARTIFACTS_DIR, filename);
-  await page.screenshot({
-    path: outputPath,
-    fullPage: Boolean(fullPage),
+  return runBrowserAction("browser_screenshot", { fullPage: Boolean(fullPage) }, async () => {
+    const page = await ensureBrowserPage();
+    const outputPath = await captureBrowserArtifact("browser-shot", Boolean(fullPage));
+    return {
+      path: outputPath,
+      url: page.url(),
+      title: await page.title().catch(() => ""),
+    };
   });
-  return {
-    path: outputPath,
-    url: page.url(),
-    title: await page.title().catch(() => ""),
-  };
 }
 
 async function seoAuditUrl(url: string) {
@@ -1338,32 +1456,64 @@ async function crawlSite(startUrl: string, requestedMaxPages?: number) {
 }
 
 async function browserNavigate(url: string) {
-  const page = await ensureBrowserPage();
-  const safeUrl = parseHttpUrl(url).toString();
-  await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  return browserReadState();
+  return runBrowserAction("browser_navigate", { url }, async () => {
+    const page = await ensureBrowserPage();
+    const safeUrl = parseHttpUrl(url).toString();
+    await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const title = await page.title().catch(() => "");
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url: page.url(),
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
 }
 
 async function browserClick(selector: string) {
-  const page = await ensureBrowserPage();
-  await page.locator(selector).first().click({ timeout: 15_000 });
-  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  return browserReadState();
+  return runBrowserAction("browser_click", { selector }, async () => {
+    const page = await ensureBrowserPage();
+    await page.locator(selector).first().click({ timeout: 15_000 });
+    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+    const title = await page.title().catch(() => "");
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url: page.url(),
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
 }
 
 async function browserType(selector: string, text: string) {
-  const page = await ensureBrowserPage();
-  const locator = page.locator(selector).first();
-  await locator.click({ timeout: 15_000 });
-  await locator.fill(text, { timeout: 15_000 });
-  return browserReadState();
+  return runBrowserAction("browser_type", { selector, textPreview: text.slice(0, 80) }, async () => {
+    const page = await ensureBrowserPage();
+    const locator = page.locator(selector).first();
+    await locator.click({ timeout: 15_000 });
+    await locator.fill(text, { timeout: 15_000 });
+    const title = await page.title().catch(() => "");
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url: page.url(),
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
 }
 
 async function browserPress(key: string) {
-  const page = await ensureBrowserPage();
-  await page.keyboard.press(key);
-  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  return browserReadState();
+  return runBrowserAction("browser_press", { key }, async () => {
+    const page = await ensureBrowserPage();
+    await page.keyboard.press(key);
+    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+    const title = await page.title().catch(() => "");
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url: page.url(),
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
 }
 
 async function closeBrowserSession() {
@@ -1375,6 +1525,13 @@ async function closeBrowserSession() {
     await browserSession.close();
   }
   browserSession = null;
+  await recordBrowserTrace({
+    action: "browser_close",
+    status: "success",
+    details: {},
+    url: "",
+    title: "",
+  });
   return "Browser session closed.";
 }
 
@@ -1403,11 +1560,22 @@ function writeLocalMemoryStore(entries: Array<{ fact: string; category: string; 
 }
 
 function getAutonomyOverview() {
+  const browserTrace = readBrowserTrace();
+  const latestBrowserTrace = browserTrace[0];
   return {
     registeredTools: readRegisteredTools(),
     healingRecipes: readHealingRecipes(),
     approvals: readApprovals(),
     approvalPolicy: APPROVAL_POLICY,
+    browser: {
+      sessionOpen: Boolean(browserSession && browserPageSession && !browserPageSession.isClosed()),
+      headless: PLAYWRIGHT_HEADLESS,
+      artifactsDir: BROWSER_ARTIFACTS_DIR,
+      recentTrace: browserTrace.slice(0, 12),
+      lastActionAt: latestBrowserTrace?.createdAt,
+      lastError: latestBrowserTrace?.status === "error" ? latestBrowserTrace.error : undefined,
+      currentUrl: browserPageSession && !browserPageSession.isClosed() ? browserPageSession.url() : "",
+    },
     relay: {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
       allowedRoots: RELAY_ALLOWED_ROOTS,

@@ -60,12 +60,33 @@ export type PendingApproval = {
   result?: unknown;
 };
 
+export type BrowserTraceEntry = {
+  id: string;
+  action: string;
+  status: 'success' | 'error';
+  createdAt: string;
+  url?: string;
+  title?: string;
+  details?: Record<string, unknown>;
+  error?: string;
+  artifactPath?: string;
+};
+
 export type AutonomyOverview = {
   registeredTools: RegisteredTool[];
   healingRecipes: HealingRecipe[];
   approvals: PendingApproval[];
   approvalPolicy: ApprovalPolicy;
   currentUserRole: UserRole;
+  browser: {
+    sessionOpen: boolean;
+    headless: boolean;
+    artifactsDir: string;
+    recentTrace: BrowserTraceEntry[];
+    lastActionAt?: string;
+    lastError?: string;
+    currentUrl: string;
+  };
   relay: {
     allowedCommands: string[];
     allowedRoots: string[];
