@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -12,6 +12,7 @@ import {
   Paperclip,
   Send,
   Sparkles,
+  Search,
   User,
   Workflow as WorkflowIcon,
   X,
@@ -60,6 +61,25 @@ export function ChatView({
   executeWorkflow,
   runSummaries,
 }: ChatViewProps) {
+  const [runSearch, setRunSearch] = useState('');
+  const [runFilter, setRunFilter] = useState<'all' | 'failed' | 'approvals' | 'workflow'>('all');
+
+  const filteredRunSummaries = useMemo(() => {
+    const normalizedSearch = runSearch.trim().toLowerCase();
+
+    return runSummaries.filter((summary) => {
+      const matchesSearch = !normalizedSearch
+        || `${summary.title} ${summary.notes} ${summary.agentId}`.toLowerCase().includes(normalizedSearch);
+
+      const matchesFilter = runFilter === 'all'
+        || (runFilter === 'failed' && summary.status === 'failed')
+        || (runFilter === 'approvals' && summary.approvalCount > 0)
+        || (runFilter === 'workflow' && summary.workflowLaunched);
+
+      return matchesSearch && matchesFilter;
+    });
+  }, [runFilter, runSearch, runSummaries]);
+
   return (
     <>
       <motion.div
@@ -87,8 +107,41 @@ export function ChatView({
                 </div>
               </div>
 
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="relative flex-1 max-w-xl">
+                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
+                  <input
+                    value={runSearch}
+                    onChange={(event) => setRunSearch(event.target.value)}
+                    placeholder="Search run titles, notes, or agent ids..."
+                    className="w-full rounded-2xl bg-white/5 border border-white/10 pl-11 pr-4 py-3 text-sm outline-none focus:border-cyber-blue/40 placeholder:text-zinc-700"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: 'all', label: 'All Runs' },
+                    { id: 'failed', label: 'Failed' },
+                    { id: 'approvals', label: 'Needs Approval' },
+                    { id: 'workflow', label: 'Workflow Launched' },
+                  ].map((filter) => (
+                    <button
+                      key={filter.id}
+                      onClick={() => setRunFilter(filter.id as typeof runFilter)}
+                      className={cn(
+                        'px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] border transition-all',
+                        runFilter === filter.id
+                          ? 'bg-cyber-blue/10 border-cyber-blue/30 text-cyber-blue'
+                          : 'bg-white/5 border-white/10 text-zinc-500 hover:text-white hover:border-white/20'
+                      )}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="grid gap-4">
-                {runSummaries.map((summary) => {
+                {filteredRunSummaries.map((summary) => {
                   const summaryAgent = AGENTS.find((agent) => agent.id === summary.agentId) || selectedAgent;
                   return (
                     <div key={summary.id} className="rounded-3xl border border-white/5 bg-black/20 px-5 py-4">
@@ -120,6 +173,11 @@ export function ChatView({
                     </div>
                   );
                 })}
+                {filteredRunSummaries.length === 0 && (
+                  <div className="rounded-3xl border border-dashed border-white/10 bg-black/10 px-5 py-8 text-sm text-zinc-500 text-center">
+                    No runs match the current search and filter settings.
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
