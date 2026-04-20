@@ -5,11 +5,21 @@ export type AppView = 'chat' | 'agents' | 'workflows' | 'toolbox';
 
 export interface Message extends PersistedMessage {}
 
+export interface WorkflowStepRun {
+  agentId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  output?: string;
+  error?: string;
+}
+
 export interface WorkflowState {
   workflow: WorkflowShape;
   currentStep: number;
   isRunning: boolean;
   outputs: string[];
+  steps: WorkflowStepRun[];
+  startedAt: Date;
+  completedAt?: Date;
 }
 
 export type SystemLog = {

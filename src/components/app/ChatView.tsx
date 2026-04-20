@@ -116,29 +116,96 @@ export function ChatView({
                   </div>
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tight">{workflowState.workflow.name}</h3>
-                    <p className="text-[10px] text-zinc-500 uppercase font-black tracking-[0.2em]">Executing Multi-Agent Pipeline</p>
+                    <p className="text-[10px] text-zinc-500 uppercase font-black tracking-[0.2em]">
+                      {workflowState.isRunning ? 'Executing Multi-Agent Pipeline' : 'Autonomous Pipeline Timeline'}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Loader2 size={16} className="animate-spin text-cyber-blue" />
-                  <span className="text-xs font-black text-cyber-blue">Step {workflowState.currentStep + 1} of {workflowState.workflow.steps.length}</span>
+                  {workflowState.isRunning ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin text-cyber-blue" />
+                      <span className="text-xs font-black text-cyber-blue">Step {workflowState.currentStep + 1} of {workflowState.workflow.steps.length}</span>
+                    </>
+                  ) : (
+                    <span className="text-xs font-black text-cyber-lime">
+                      {workflowState.steps.some((step) => step.status === 'failed') ? 'Pipeline halted' : 'Pipeline complete'}
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div className="flex gap-2">
                 {workflowState.workflow.steps.map((step, idx) => {
                   const stepAgent = AGENTS.find((agent) => agent.id === step.agentId);
+                  const stepRun = workflowState.steps[idx];
                   return (
                     <div key={idx} className="flex-1 space-y-2">
                       <div
                         className={cn(
                           'h-1.5 rounded-full transition-all duration-500',
-                          idx < workflowState.currentStep ? 'bg-cyber-lime' : idx === workflowState.currentStep ? 'bg-cyber-blue animate-pulse' : 'bg-white/5'
+                          stepRun?.status === 'completed'
+                            ? 'bg-cyber-lime'
+                            : stepRun?.status === 'failed'
+                              ? 'bg-cyber-rose'
+                              : stepRun?.status === 'running'
+                                ? 'bg-cyber-blue animate-pulse'
+                                : 'bg-white/5'
                         )}
                       />
-                      <div className={cn('text-[9px] font-black uppercase text-center truncate', idx === workflowState.currentStep ? 'text-cyber-blue' : 'text-zinc-700')}>
+                      <div className={cn(
+                        'text-[9px] font-black uppercase text-center truncate',
+                        stepRun?.status === 'completed'
+                          ? 'text-cyber-lime'
+                          : stepRun?.status === 'failed'
+                            ? 'text-cyber-rose'
+                            : stepRun?.status === 'running'
+                              ? 'text-cyber-blue'
+                              : 'text-zinc-700'
+                      )}>
                         {stepAgent?.name}
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-3">
+                {workflowState.steps.map((stepRun, idx) => {
+                  const stepAgent = AGENTS.find((agent) => agent.id === stepRun.agentId);
+                  return (
+                    <div key={`${stepRun.agentId}-${idx}`} className="rounded-2xl border border-white/5 bg-black/20 px-5 py-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <AgentAvatar agent={stepAgent || selectedAgent} size="sm" />
+                          <div>
+                            <div className="text-sm font-black text-white">{stepAgent?.name || stepRun.agentId}</div>
+                            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Step {idx + 1}</div>
+                          </div>
+                        </div>
+                        <div className={cn(
+                          'text-[10px] font-black uppercase tracking-[0.2em]',
+                          stepRun.status === 'completed'
+                            ? 'text-cyber-lime'
+                            : stepRun.status === 'failed'
+                              ? 'text-cyber-rose'
+                              : stepRun.status === 'running'
+                                ? 'text-cyber-blue'
+                                : 'text-zinc-600'
+                        )}>
+                          {stepRun.status}
+                        </div>
+                      </div>
+                      {stepRun.output && (
+                        <p className="mt-3 text-sm text-zinc-400 leading-relaxed line-clamp-3">
+                          {stepRun.output}
+                        </p>
+                      )}
+                      {stepRun.error && (
+                        <p className="mt-3 text-sm text-rose-200 leading-relaxed">
+                          {stepRun.error}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
