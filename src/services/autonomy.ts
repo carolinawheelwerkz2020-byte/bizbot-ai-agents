@@ -72,6 +72,41 @@ export type BrowserTraceEntry = {
   artifactPath?: string;
 };
 
+export type BrowserReadResult = {
+  title: string;
+  url: string;
+  content: string;
+};
+
+export type ScheduledJobTargetType = 'tool' | 'recipe' | 'self_heal';
+
+export type ScheduledJob = {
+  id: string;
+  name: string;
+  targetType: ScheduledJobTargetType;
+  targetId?: string;
+  intervalMinutes: number;
+  status: 'active' | 'paused';
+  createdAt: string;
+  lastRunAt?: string;
+  nextRunAt: string;
+  lastResultStatus?: 'completed' | 'failed';
+  lastResultSummary?: string;
+};
+
+export type JobRun = {
+  id: string;
+  scheduleId?: string;
+  name: string;
+  targetType: ScheduledJobTargetType;
+  targetId?: string;
+  status: 'running' | 'completed' | 'failed';
+  createdAt: string;
+  startedAt: string;
+  completedAt?: string;
+  outputSummary?: string;
+};
+
 export type AutonomyOverview = {
   registeredTools: RegisteredTool[];
   healingRecipes: HealingRecipe[];
@@ -86,6 +121,19 @@ export type AutonomyOverview = {
     lastActionAt?: string;
     lastError?: string;
     currentUrl: string;
+  };
+  schedules: ScheduledJob[];
+  jobRuns: JobRun[];
+  telemetry: {
+    pendingApprovals: number;
+    approvedApprovals: number;
+    rejectedApprovals: number;
+    activeSchedules: number;
+    runningJobs: number;
+    completedJobs: number;
+    failedJobs: number;
+    browserSuccesses: number;
+    browserFailures: number;
   };
   relay: {
     allowedCommands: string[];
@@ -194,6 +242,39 @@ export const AutonomyService = {
     return autonomyFetch<PendingApproval>(`/api/autonomy/approvals/${encodeURIComponent(id)}/reject`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
+    });
+  },
+
+  createSchedule(payload: {
+    name: string;
+    targetType: ScheduledJobTargetType;
+    targetId?: string;
+    intervalMinutes: number;
+  }) {
+    return autonomyFetch<ScheduledJob>('/api/autonomy/schedules', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  toggleSchedule(id: string, active: boolean) {
+    return autonomyFetch<ScheduledJob>(`/api/autonomy/schedules/${encodeURIComponent(id)}/toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ active }),
+    });
+  },
+
+  runScheduleNow(id: string) {
+    return autonomyFetch<JobRun>(`/api/autonomy/schedules/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  replayBrowserTrace(traceId: string) {
+    return autonomyFetch<BrowserReadResult>('/api/autonomy/browser/replay', {
+      method: 'POST',
+      body: JSON.stringify({ traceId }),
     });
   },
 };

@@ -4,19 +4,22 @@ import {
   Activity,
   BarChart3,
   Bot,
+  CalendarClock,
   Globe,
+  Gauge,
   Layers,
   LayoutDashboard,
   PackagePlus,
   Play,
   RefreshCcw,
+  RotateCcw,
   Share2,
   Sparkles,
   Target,
   Wrench,
   Video,
 } from 'lucide-react';
-import { AutonomyService, type ApprovalActionType, type AutonomyOverview, type PendingApproval, type UserRole } from '../../services/autonomy';
+import { AutonomyService, type ApprovalActionType, type AutonomyOverview, type BrowserTraceEntry, type PendingApproval, type ScheduledJobTargetType, type UserRole } from '../../services/autonomy';
 import { Badge, Button, Card, cn } from './ui';
 
 type ToolboxViewProps = {
@@ -56,6 +59,19 @@ const initialOverview: AutonomyOverview = {
     artifactsDir: '',
     recentTrace: [],
     currentUrl: '',
+  },
+  schedules: [],
+  jobRuns: [],
+  telemetry: {
+    pendingApprovals: 0,
+    approvedApprovals: 0,
+    rejectedApprovals: 0,
+    activeSchedules: 0,
+    runningJobs: 0,
+    completedJobs: 0,
+    failedJobs: 0,
+    browserSuccesses: 0,
+    browserFailures: 0,
   },
   relay: {
     allowedCommands: [],
@@ -128,6 +144,8 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
   const [isSelfHealing, setIsSelfHealing] = useState(false);
   const [runningToolId, setRunningToolId] = useState<string | null>(null);
   const [runningRecipeId, setRunningRecipeId] = useState<string | null>(null);
+  const [runningScheduleId, setRunningScheduleId] = useState<string | null>(null);
+  const [replayingTraceId, setReplayingTraceId] = useState<string | null>(null);
   const [toolForm, setToolForm] = useState({
     id: '',
     description: '',
@@ -145,6 +163,17 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       { type: 'command', value: 'npm run lint' },
       { type: 'command', value: 'npm run build' },
     ], null, 2),
+  });
+  const [scheduleForm, setScheduleForm] = useState<{
+    name: string;
+    targetType: ScheduledJobTargetType;
+    targetId: string;
+    intervalMinutes: number;
+  }>({
+    name: '',
+    targetType: 'tool',
+    targetId: '',
+    intervalMinutes: 60,
   });
 
   const relaySummary = useMemo(() => {
@@ -173,6 +202,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     () => overview.browser.recentTrace.slice(0, 6),
     [overview.browser.recentTrace]
   );
+  const recentJobRuns = useMemo(
+    () => overview.jobRuns.slice(0, 8),
+    [overview.jobRuns]
+  );
 
   const refreshOverview = async (silent = false) => {
     try {
@@ -199,6 +232,13 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
 
   useEffect(() => {
     void refreshOverview();
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshOverview(true);
+    }, 30000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const handleRegisterTool = async () => {
@@ -362,6 +402,94 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     }
   };
 
+  const handleCreateSchedule = async () => {
+    try {
+      const result = await AutonomyService.createSchedule({
+        name: scheduleForm.name,
+        targetType: scheduleForm.targetType,
+        targetId: scheduleForm.targetType === 'self_heal' ? undefined : scheduleForm.targetId,
+        intervalMinutes: scheduleForm.intervalMinutes,
+      });
+      setScheduleForm({
+        name: '',
+        targetType: scheduleForm.targetType,
+        targetId: '',
+        intervalMinutes: scheduleForm.intervalMinutes,
+      });
+      setActionState({
+        kind: 'success',
+        title: 'Scheduled job created',
+        detail: `${result.name} will run every ${result.intervalMinutes} minutes.`,
+      });
+      onLog?.(`Created scheduled job ${result.id}`, 'success');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create scheduled job.';
+      setActionState({ kind: 'error', title: 'Schedule creation failed', detail: message });
+      onLog?.(`Schedule creation failed: ${message}`, 'warn');
+    }
+  };
+
+  const handleToggleSchedule = async (id: string, active: boolean) => {
+    try {
+      const result = await AutonomyService.toggleSchedule(id, active);
+      setActionState({
+        kind: 'success',
+        title: active ? 'Schedule resumed' : 'Schedule paused',
+        detail: `${result.name} is now ${result.status}.`,
+      });
+      onLog?.(`Updated schedule ${id} to ${result.status}`, active ? 'success' : 'warn');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to update schedule.';
+      setActionState({ kind: 'error', title: 'Schedule update failed', detail: message });
+      onLog?.(`Schedule update failed: ${message}`, 'warn');
+    }
+  };
+
+  const handleRunScheduleNow = async (id: string) => {
+    try {
+      setRunningScheduleId(id);
+      const result = await AutonomyService.runScheduleNow(id);
+      setSelectedOutput(result.outputSummary || 'Scheduled job finished without output.');
+      setActionState({
+        kind: result.status === 'failed' ? 'error' : 'success',
+        title: `Scheduled job ${result.status}`,
+        detail: result.outputSummary || 'No output returned.',
+      });
+      onLog?.(`Ran scheduled job ${id}`, result.status === 'failed' ? 'warn' : 'success');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to run scheduled job.';
+      setActionState({ kind: 'error', title: 'Scheduled job failed', detail: message });
+      onLog?.(`Scheduled job failed: ${message}`, 'warn');
+    } finally {
+      setRunningScheduleId(null);
+    }
+  };
+
+  const handleReplayBrowserTrace = async (entry: BrowserTraceEntry) => {
+    try {
+      setReplayingTraceId(entry.id);
+      const result = await AutonomyService.replayBrowserTrace(entry.id);
+      const detail = `${result.title}\n${result.url}\n\n${result.content}`;
+      setSelectedOutput(detail);
+      setActionState({
+        kind: 'success',
+        title: `Replayed ${entry.action}`,
+        detail,
+      });
+      onLog?.(`Replayed browser trace ${entry.id}`, 'success');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to replay browser trace.';
+      setActionState({ kind: 'error', title: 'Browser replay failed', detail: message });
+      onLog?.(`Browser replay failed: ${message}`, 'warn');
+    } finally {
+      setReplayingTraceId(null);
+    }
+  };
+
   return (
     <motion.div
       key="toolbox"
@@ -397,37 +525,37 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card className="p-6 space-y-3">
             <div className="flex items-center justify-between">
-              <Badge color="blue">Registered Tools</Badge>
-              <Wrench size={18} className="text-cyber-blue" />
+              <Badge color="blue">Active Schedules</Badge>
+              <CalendarClock size={18} className="text-cyber-blue" />
             </div>
-            <div className="text-4xl font-black tracking-tight">{overview.registeredTools.length}</div>
-            <p className="text-sm text-zinc-500">Reusable command-backed tools the agents can run without redefining them each time.</p>
+            <div className="text-4xl font-black tracking-tight">{overview.telemetry.activeSchedules}</div>
+            <p className="text-sm text-zinc-500">Background jobs that stay active and continue running on the server without the browser staying open.</p>
           </Card>
           <Card className="p-6 space-y-3">
             <div className="flex items-center justify-between">
-              <Badge color="lime">Healing Recipes</Badge>
-              <Activity size={18} className="text-cyber-lime" />
+              <Badge color="lime">Job Throughput</Badge>
+              <Gauge size={18} className="text-cyber-lime" />
             </div>
-            <div className="text-4xl font-black tracking-tight">{overview.healingRecipes.length}</div>
-            <p className="text-sm text-zinc-500">Saved recovery playbooks for build fixes, QA sweeps, and repeatable repair flows.</p>
+            <div className="text-4xl font-black tracking-tight">{overview.telemetry.completedJobs}</div>
+            <p className="text-sm text-zinc-500">{overview.telemetry.runningJobs} running now, {overview.telemetry.failedJobs} failed recently.</p>
           </Card>
           <Card className="p-6 space-y-3">
             <div className="flex items-center justify-between">
-              <Badge color="rose">Relay Policy</Badge>
+              <Badge color="rose">Approvals</Badge>
               <Bot size={18} className="text-cyber-rose" />
             </div>
-            <div className="text-sm font-semibold leading-relaxed text-zinc-200">{relaySummary}</div>
-            <p className="text-sm text-zinc-500">Only these executables are available when agents create or run custom tools.</p>
+            <div className="text-4xl font-black tracking-tight">{overview.telemetry.pendingApprovals}</div>
+            <p className="text-sm text-zinc-500">{overview.telemetry.approvedApprovals} approved, {overview.telemetry.rejectedApprovals} rejected.</p>
           </Card>
           <Card className="p-6 space-y-3">
             <div className="flex items-center justify-between">
-              <Badge color="gold">Safety Limits</Badge>
+              <Badge color="gold">Browser Health</Badge>
               <Sparkles size={18} className="text-amber-400" />
             </div>
             <div className="text-sm font-semibold leading-relaxed text-zinc-200">
-              {overview.limits.maxHealingSteps} healing steps max
+              {overview.telemetry.browserSuccesses} successful actions
             </div>
-            <p className="text-sm text-zinc-500">Crawls stop at {overview.limits.maxCrawlPages} pages and browser fetches stay bounded for stability.</p>
+            <p className="text-sm text-zinc-500">{overview.telemetry.browserFailures} browser failures logged. Crawls still stop at {overview.limits.maxCrawlPages} pages.</p>
           </Card>
         </div>
 
@@ -483,6 +611,18 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                   {entry.artifactPath && (
                     <div className="text-sm text-zinc-300 break-all">
                       Artifact: <span className="text-white font-semibold">{entry.artifactPath}</span>
+                    </div>
+                  )}
+                  {['browser_navigate', 'browser_click', 'browser_type', 'browser_press', 'browser_wait_for_text'].includes(entry.action) && (
+                    <div className="pt-1">
+                      <Button
+                        variant="secondary"
+                        icon={RotateCcw}
+                        loading={replayingTraceId === entry.id}
+                        onClick={() => void handleReplayBrowserTrace(entry)}
+                      >
+                        Replay Step
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -937,6 +1077,141 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                 ))}
                 {!isLoadingOverview && overview.healingRecipes.length === 0 && (
                   <div className="text-sm text-zinc-500">No healing recipes saved yet. Create one above so the agents can recover with less guesswork.</div>
+                )}
+              </div>
+            </Card>
+
+            <Card className="p-6 lg:p-8 space-y-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-2xl font-black tracking-tight">Background Jobs</h3>
+                  <p className="text-sm text-zinc-500 mt-2">Run tool checks, recovery recipes, and self-heal cycles on a recurring server schedule that survives browser refreshes.</p>
+                </div>
+                <Badge color="blue">Resumable Queue</Badge>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Job Name</span>
+                  <input
+                    value={scheduleForm.name}
+                    onChange={(event) => setScheduleForm((prev) => ({ ...prev, name: event.target.value }))}
+                    className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-cyber-blue/40"
+                    placeholder="Hourly lint sweep"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Every N Minutes</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={1440}
+                    value={scheduleForm.intervalMinutes}
+                    onChange={(event) => setScheduleForm((prev) => ({ ...prev, intervalMinutes: Number(event.target.value) || 60 }))}
+                    className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-cyber-blue/40"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Target Type</span>
+                  <select
+                    value={scheduleForm.targetType}
+                    onChange={(event) => setScheduleForm((prev) => ({ ...prev, targetType: event.target.value as ScheduledJobTargetType, targetId: '' }))}
+                    className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-cyber-blue/40"
+                  >
+                    <option value="tool">Registered Tool</option>
+                    <option value="recipe">Healing Recipe</option>
+                    <option value="self_heal">Self-Heal Routine</option>
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Target ID</span>
+                  <select
+                    value={scheduleForm.targetId}
+                    onChange={(event) => setScheduleForm((prev) => ({ ...prev, targetId: event.target.value }))}
+                    disabled={scheduleForm.targetType === 'self_heal'}
+                    className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-cyber-blue/40 disabled:opacity-50"
+                  >
+                    <option value="">{scheduleForm.targetType === 'self_heal' ? 'Not required for self-heal' : 'Select a target'}</option>
+                    {(scheduleForm.targetType === 'tool' ? overview.registeredTools : overview.healingRecipes).map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.id}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <Button variant="primary" icon={CalendarClock} onClick={() => void handleCreateSchedule()}>
+                Create Background Job
+              </Button>
+
+              <div className="grid gap-4">
+                {overview.schedules.map((schedule) => (
+                  <Card key={schedule.id} className="p-5 border-white/10">
+                    <div className="flex flex-col gap-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <Badge color={schedule.status === 'active' ? 'lime' : 'rose'}>{schedule.status}</Badge>
+                            <span className="font-semibold text-white">{schedule.name}</span>
+                            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+                              {schedule.targetType}{schedule.targetId ? ` -> ${schedule.targetId}` : ''}
+                            </span>
+                          </div>
+                          <div className="text-sm text-zinc-300">
+                            Every {schedule.intervalMinutes} minutes. Next run {new Date(schedule.nextRunAt).toLocaleString()}
+                          </div>
+                          <div className="text-sm text-zinc-500">
+                            Last result: {schedule.lastResultStatus || 'Not run yet'}{schedule.lastResultSummary ? ` - ${schedule.lastResultSummary}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          <Button
+                            variant="secondary"
+                            icon={Play}
+                            loading={runningScheduleId === schedule.id}
+                            onClick={() => void handleRunScheduleNow(schedule.id)}
+                          >
+                            Run Now
+                          </Button>
+                          <Button
+                            variant={schedule.status === 'active' ? 'danger' : 'primary'}
+                            onClick={() => void handleToggleSchedule(schedule.id, schedule.status !== 'active')}
+                          >
+                            {schedule.status === 'active' ? 'Pause' : 'Resume'}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+                {!isLoadingOverview && overview.schedules.length === 0 && (
+                  <div className="text-sm text-zinc-500">No background jobs yet. Create one above to keep recurring checks and repairs running even after you refresh the app.</div>
+                )}
+              </div>
+
+              <div className="grid gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <h4 className="text-lg font-black tracking-tight">Recent Job Runs</h4>
+                  <Badge color="gold">Server History</Badge>
+                </div>
+                {recentJobRuns.map((run) => (
+                  <Card key={run.id} className="p-4 border-white/10 bg-black/20">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <Badge color={run.status === 'completed' ? 'lime' : run.status === 'running' ? 'blue' : 'rose'}>{run.status}</Badge>
+                        <span className="font-semibold text-white">{run.name}</span>
+                        <span className="text-xs text-zinc-500">{new Date(run.startedAt).toLocaleString()}</span>
+                      </div>
+                      <div className="text-sm text-zinc-400">
+                        {run.targetType}{run.targetId ? ` -> ${run.targetId}` : ''}
+                      </div>
+                      {run.outputSummary && (
+                        <div className="text-sm text-zinc-300">{run.outputSummary}</div>
+                      )}
+                    </div>
+                  </Card>
+                ))}
+                {!isLoadingOverview && recentJobRuns.length === 0 && (
+                  <div className="text-sm text-zinc-500">No job runs recorded yet. Once a scheduled task runs, its latest status will stay visible here across refreshes.</div>
                 )}
               </div>
             </Card>

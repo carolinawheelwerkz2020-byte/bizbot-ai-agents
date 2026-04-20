@@ -101,6 +101,35 @@ type BrowserTraceEntry = {
   artifactPath?: string;
 };
 
+type ScheduledJobTargetType = "tool" | "recipe" | "self_heal";
+
+type ScheduledJob = {
+  id: string;
+  name: string;
+  targetType: ScheduledJobTargetType;
+  targetId?: string;
+  intervalMinutes: number;
+  status: "active" | "paused";
+  createdAt: string;
+  lastRunAt?: string;
+  nextRunAt: string;
+  lastResultStatus?: "completed" | "failed";
+  lastResultSummary?: string;
+};
+
+type JobRun = {
+  id: string;
+  scheduleId?: string;
+  name: string;
+  targetType: ScheduledJobTargetType;
+  targetId?: string;
+  status: "running" | "completed" | "failed";
+  createdAt: string;
+  startedAt: string;
+  completedAt?: string;
+  outputSummary?: string;
+};
+
 type StoredRunSummary = {
   id: string;
   agentId: string;
@@ -150,6 +179,8 @@ const APPROVALS_PATH = path.join(process.cwd(), ".bizbot-approvals.json");
 const RUN_HISTORY_PATH = path.join(process.cwd(), ".bizbot-run-history.json");
 const RUN_TEMPLATES_PATH = path.join(process.cwd(), ".bizbot-run-templates.json");
 const BROWSER_TRACE_PATH = path.join(process.cwd(), ".bizbot-browser-trace.json");
+const SCHEDULED_JOBS_PATH = path.join(process.cwd(), ".bizbot-scheduled-jobs.json");
+const JOB_RUNS_PATH = path.join(process.cwd(), ".bizbot-job-runs.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
 const MAX_HEALING_STEPS = 12;
@@ -157,6 +188,8 @@ const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
 const BROWSER_ARTIFACTS_DIR = path.join(process.cwd(), ".browser-artifacts");
 const MAX_BROWSER_TRACE_ENTRIES = 60;
 const BROWSER_ACTION_TIMEOUT_MS = 20_000;
+const MAX_JOB_RUN_ENTRIES = 120;
+const MAX_SCHEDULED_JOBS = 30;
 
 const ROLE_RANK: Record<UserRole, number> = {
   operator: 1,
@@ -174,6 +207,8 @@ const APPROVAL_POLICY: Record<ApprovalActionType, { requestRole: UserRole; appro
 
 let browserSession: Browser | null = null;
 let browserPageSession: Page | null = null;
+let schedulerInterval: NodeJS.Timeout | null = null;
+let schedulerTickInFlight = false;
 
 function ensureFirebaseAdmin() {
   if (admin.apps.length > 0) return;
@@ -422,6 +457,26 @@ function appendBrowserTrace(entry: BrowserTraceEntry) {
   writeBrowserTrace(next);
 }
 
+function readScheduledJobs() {
+  return readJsonArrayFile<ScheduledJob>(SCHEDULED_JOBS_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.name === "string" && typeof entry.targetType === "string",
+  );
+}
+
+function writeScheduledJobs(entries: ScheduledJob[]) {
+  writeJsonArrayFile(SCHEDULED_JOBS_PATH, entries);
+}
+
+function readJobRuns() {
+  return readJsonArrayFile<JobRun>(JOB_RUNS_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.name === "string" && typeof entry.status === "string",
+  );
+}
+
+function writeJobRuns(entries: JobRun[]) {
+  writeJsonArrayFile(JOB_RUNS_PATH, entries);
+}
+
 function readRunHistory() {
   return readJsonArrayFile<StoredRunSummary>(RUN_HISTORY_PATH).filter(
     (entry) => entry && typeof entry.id === "string" && typeof entry.agentId === "string" && typeof entry.title === "string",
@@ -463,6 +518,57 @@ function createApprovalRequest(
   approvals.unshift(approval);
   writeApprovals(approvals);
   return approval;
+}
+
+function normalizeScheduleIntervalMinutes(value: unknown) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes < 5 || minutes > 24 * 60) {
+    throw new Error("Schedule interval must be between 5 and 1440 minutes.");
+  }
+  return Math.round(minutes);
+}
+
+function normalizeScheduleTargetType(value: unknown): ScheduledJobTargetType {
+  if (value === "tool" || value === "recipe" || value === "self_heal") {
+    return value;
+  }
+  throw new Error("Schedule target type must be tool, recipe, or self_heal.");
+}
+
+function computeNextRunAt(intervalMinutes: number, from = new Date()) {
+  return new Date(from.getTime() + intervalMinutes * 60_000).toISOString();
+}
+
+function summarizeJobResult(result: unknown) {
+  if (!result) return "No output returned.";
+  if (typeof result === "string") return result.slice(0, 280);
+  if (typeof result === "object") {
+    const record = result as Record<string, unknown>;
+    if (typeof record.stderr === "string" && record.stderr.trim()) {
+      return record.stderr.trim().slice(0, 280);
+    }
+    if (typeof record.stdout === "string" && record.stdout.trim()) {
+      return record.stdout.trim().slice(0, 280);
+    }
+    if (typeof record.content === "string" && record.content.trim()) {
+      return record.content.trim().slice(0, 280);
+    }
+    return JSON.stringify(record).slice(0, 280);
+  }
+  return String(result).slice(0, 280);
+}
+
+function createJobRunEntry(schedule: ScheduledJob) {
+  return {
+    id: `job-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    scheduleId: schedule.id,
+    name: schedule.name,
+    targetType: schedule.targetType,
+    targetId: schedule.targetId,
+    status: "running" as const,
+    createdAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+  };
 }
 
 function validateHealingSteps(input: unknown) {
@@ -774,6 +880,115 @@ async function executeApprovalAction(approval: PendingApproval) {
   }
 }
 
+async function executeScheduledTarget(schedule: ScheduledJob) {
+  switch (schedule.targetType) {
+    case "tool":
+      if (!schedule.targetId) {
+        throw new Error("Scheduled tool jobs require a target tool id.");
+      }
+      return runRegisteredTool(schedule.targetId);
+    case "recipe":
+      if (!schedule.targetId) {
+        throw new Error("Scheduled recipe jobs require a target recipe id.");
+      }
+      return runHealingRecipe(schedule.targetId);
+    case "self_heal":
+      return selfHealProject();
+    default:
+      throw new Error(`Unsupported scheduled target "${(schedule as ScheduledJob).targetType}".`);
+  }
+}
+
+async function runScheduledJobNow(scheduleId: string) {
+  const schedules = readScheduledJobs();
+  const scheduleIndex = schedules.findIndex((entry) => entry.id === scheduleId);
+  if (scheduleIndex < 0) {
+    throw new Error("Scheduled job not found.");
+  }
+
+  const existingRuns = readJobRuns();
+  if (existingRuns.some((entry) => entry.scheduleId === scheduleId && entry.status === "running")) {
+    throw new Error("This scheduled job is already running.");
+  }
+
+  const schedule = schedules[scheduleIndex];
+  const run = createJobRunEntry(schedule);
+  writeJobRuns([run, ...existingRuns].slice(0, MAX_JOB_RUN_ENTRIES));
+
+  try {
+    const result = await executeScheduledTarget(schedule);
+    const completedRun: JobRun = {
+      ...run,
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      outputSummary: summarizeJobResult(result),
+    };
+    const refreshedRuns = readJobRuns().map((entry) => entry.id === run.id ? completedRun : entry);
+    writeJobRuns(refreshedRuns.slice(0, MAX_JOB_RUN_ENTRIES));
+
+    schedules[scheduleIndex] = {
+      ...schedule,
+      lastRunAt: completedRun.completedAt,
+      nextRunAt: computeNextRunAt(schedule.intervalMinutes, new Date(completedRun.completedAt)),
+      lastResultStatus: "completed",
+      lastResultSummary: completedRun.outputSummary,
+    };
+    writeScheduledJobs(schedules);
+    return completedRun;
+  } catch (error) {
+    const failedRun: JobRun = {
+      ...run,
+      status: "failed",
+      completedAt: new Date().toISOString(),
+      outputSummary: error instanceof Error ? error.message : "Unknown scheduled job failure.",
+    };
+    const refreshedRuns = readJobRuns().map((entry) => entry.id === run.id ? failedRun : entry);
+    writeJobRuns(refreshedRuns.slice(0, MAX_JOB_RUN_ENTRIES));
+
+    schedules[scheduleIndex] = {
+      ...schedule,
+      lastRunAt: failedRun.completedAt,
+      nextRunAt: computeNextRunAt(schedule.intervalMinutes, new Date(failedRun.completedAt)),
+      lastResultStatus: "failed",
+      lastResultSummary: failedRun.outputSummary,
+    };
+    writeScheduledJobs(schedules);
+    throw error;
+  }
+}
+
+async function runDueSchedules() {
+  if (schedulerTickInFlight) return;
+  schedulerTickInFlight = true;
+  try {
+    const now = Date.now();
+    const schedules = readScheduledJobs();
+    const jobRuns = readJobRuns();
+    const dueSchedules = schedules.filter((entry) =>
+      entry.status === "active"
+      && new Date(entry.nextRunAt).getTime() <= now
+      && !jobRuns.some((run) => run.scheduleId === entry.id && run.status === "running")
+    );
+
+    for (const schedule of dueSchedules) {
+      try {
+        await runScheduledJobNow(schedule.id);
+      } catch (error) {
+        console.error("[scheduler]", schedule.id, error instanceof Error ? error.message : error);
+      }
+    }
+  } finally {
+    schedulerTickInFlight = false;
+  }
+}
+
+function ensureSchedulerLoop() {
+  if (schedulerInterval) return;
+  schedulerInterval = setInterval(() => {
+    void runDueSchedules();
+  }, 30_000);
+}
+
 function getModelTools(): any[] {
   return [
     {
@@ -930,6 +1145,17 @@ function getModelTools(): any[] {
           },
         },
         {
+          name: "browser_wait_for_text",
+          description: "Wait for visible text to appear on the current page before continuing.",
+          parameters: {
+            type: "object",
+            properties: {
+              text: { type: "string", description: "Visible text that should appear on the page." },
+            },
+            required: ["text"],
+          },
+        },
+        {
           name: "browser_read",
           description: "Read the current page title, URL, and trimmed visible text from the shared browser session.",
           parameters: {
@@ -961,6 +1187,17 @@ function getModelTools(): any[] {
           parameters: {
             type: "object",
             properties: {},
+          },
+        },
+        {
+          name: "browser_replay_trace",
+          description: "Replay a recent browser action from the trace log using its trace id.",
+          parameters: {
+            type: "object",
+            properties: {
+              traceId: { type: "string", description: "Browser trace entry id to replay." },
+            },
+            required: ["traceId"],
           },
         },
         {
@@ -1486,7 +1723,7 @@ async function browserClick(selector: string) {
 }
 
 async function browserType(selector: string, text: string) {
-  return runBrowserAction("browser_type", { selector, textPreview: text.slice(0, 80) }, async () => {
+  return runBrowserAction("browser_type", { selector, text }, async () => {
     const page = await ensureBrowserPage();
     const locator = page.locator(selector).first();
     await locator.click({ timeout: 15_000 });
@@ -1514,6 +1751,43 @@ async function browserPress(key: string) {
       content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
     };
   });
+}
+
+async function browserWaitForText(text: string) {
+  return runBrowserAction("browser_wait_for_text", { text }, async () => {
+    const page = await ensureBrowserPage();
+    await page.getByText(text, { exact: false }).first().waitFor({ timeout: 15_000 });
+    const title = await page.title().catch(() => "");
+    const textContent = await page.locator("body").innerText().catch(() => "");
+    return {
+      title,
+      url: page.url(),
+      content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+    };
+  });
+}
+
+async function browserReplayTrace(traceId: string) {
+  const target = readBrowserTrace().find((entry) => entry.id === traceId);
+  if (!target) {
+    throw new Error("Browser trace entry not found.");
+  }
+
+  const details = target.details || {};
+  switch (target.action) {
+    case "browser_navigate":
+      return browserNavigate(String(details.url || target.url || ""));
+    case "browser_click":
+      return browserClick(String(details.selector || ""));
+    case "browser_type":
+      return browserType(String(details.selector || ""), String(details.textPreview || ""));
+    case "browser_press":
+      return browserPress(String(details.key || ""));
+    case "browser_wait_for_text":
+      return browserWaitForText(String(details.text || ""));
+    default:
+      throw new Error("That browser trace action cannot be replayed.");
+  }
 }
 
 async function closeBrowserSession() {
@@ -1562,6 +1836,12 @@ function writeLocalMemoryStore(entries: Array<{ fact: string; category: string; 
 function getAutonomyOverview() {
   const browserTrace = readBrowserTrace();
   const latestBrowserTrace = browserTrace[0];
+  const scheduledJobs = readScheduledJobs();
+  const jobRuns = readJobRuns();
+  const completedBrowserActions = browserTrace.filter((entry) => entry.status === "success").length;
+  const failedBrowserActions = browserTrace.filter((entry) => entry.status === "error").length;
+  const approvedCount = readApprovals().filter((entry) => entry.status === "approved").length;
+  const rejectedCount = readApprovals().filter((entry) => entry.status === "rejected").length;
   return {
     registeredTools: readRegisteredTools(),
     healingRecipes: readHealingRecipes(),
@@ -1575,6 +1855,19 @@ function getAutonomyOverview() {
       lastActionAt: latestBrowserTrace?.createdAt,
       lastError: latestBrowserTrace?.status === "error" ? latestBrowserTrace.error : undefined,
       currentUrl: browserPageSession && !browserPageSession.isClosed() ? browserPageSession.url() : "",
+    },
+    schedules: scheduledJobs,
+    jobRuns: jobRuns.slice(0, 20),
+    telemetry: {
+      pendingApprovals: readApprovals().filter((entry) => entry.status === "pending").length,
+      approvedApprovals: approvedCount,
+      rejectedApprovals: rejectedCount,
+      activeSchedules: scheduledJobs.filter((entry) => entry.status === "active").length,
+      runningJobs: jobRuns.filter((entry) => entry.status === "running").length,
+      completedJobs: jobRuns.filter((entry) => entry.status === "completed").length,
+      failedJobs: jobRuns.filter((entry) => entry.status === "failed").length,
+      browserSuccesses: completedBrowserActions,
+      browserFailures: failedBrowserActions,
     },
     relay: {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
@@ -1733,6 +2026,18 @@ async function resolveServerToolCall(
     };
   }
 
+  if (call.name === "browser_wait_for_text") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_wait_for_text",
+          response: await browserWaitForText(String(call.args?.text || "")),
+        },
+      },
+    };
+  }
+
   if (call.name === "browser_read") {
     return {
       handled: true,
@@ -1776,6 +2081,18 @@ async function resolveServerToolCall(
         functionResponse: {
           name: "browser_list_interactives",
           response: await browserListInteractives(),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_replay_trace") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_replay_trace",
+          response: await browserReplayTrace(String(call.args?.traceId || "")),
         },
       },
     };
@@ -2083,6 +2400,82 @@ async function startServer() {
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown autonomy overview error.";
       res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/schedules", (req, res) => {
+    try {
+      const schedules = readScheduledJobs();
+      if (schedules.length >= MAX_SCHEDULED_JOBS) {
+        return res.status(400).json({ error: `Only ${MAX_SCHEDULED_JOBS} scheduled jobs are allowed.` });
+      }
+
+      const targetType = normalizeScheduleTargetType(req.body?.targetType);
+      const targetId = typeof req.body?.targetId === "string" && req.body.targetId.trim()
+        ? req.body.targetId.trim()
+        : undefined;
+      if ((targetType === "tool" || targetType === "recipe") && !targetId) {
+        return res.status(400).json({ error: "Scheduled tool and recipe jobs require a target id." });
+      }
+
+      const intervalMinutes = normalizeScheduleIntervalMinutes(req.body?.intervalMinutes);
+      const entry: ScheduledJob = {
+        id: `schedule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: String(req.body?.name || `${targetType} schedule`).trim() || `${targetType} schedule`,
+        targetType,
+        targetId,
+        intervalMinutes,
+        status: "active",
+        createdAt: new Date().toISOString(),
+        nextRunAt: computeNextRunAt(intervalMinutes),
+      };
+      writeScheduledJobs([entry, ...schedules].slice(0, MAX_SCHEDULED_JOBS));
+      res.json(entry);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown schedule creation error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/schedules/:id/toggle", (req, res) => {
+    try {
+      const active = Boolean(req.body?.active);
+      const schedules = readScheduledJobs();
+      const targetIndex = schedules.findIndex((entry) => entry.id === String(req.params.id || ""));
+      if (targetIndex < 0) {
+        return res.status(404).json({ error: "Scheduled job not found." });
+      }
+      const current = schedules[targetIndex];
+      schedules[targetIndex] = {
+        ...current,
+        status: active ? "active" : "paused",
+        nextRunAt: active ? computeNextRunAt(current.intervalMinutes) : current.nextRunAt,
+      };
+      writeScheduledJobs(schedules);
+      res.json(schedules[targetIndex]);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown schedule toggle error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/schedules/:id/run", async (req, res) => {
+    try {
+      const run = await runScheduledJobNow(String(req.params.id || ""));
+      res.json(run);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown scheduled run error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/browser/replay", async (req, res) => {
+    try {
+      const result = await browserReplayTrace(String(req.body?.traceId || ""));
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown browser replay error.";
+      res.status(400).json({ error: message });
     }
   });
 
@@ -2488,6 +2881,9 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  ensureSchedulerLoop();
+  void runDueSchedules();
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
