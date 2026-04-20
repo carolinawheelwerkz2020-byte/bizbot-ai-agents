@@ -61,6 +61,24 @@ type HealingRecipe = {
   createdAt: string;
 };
 
+type ApprovalActionType =
+  | "register_tool"
+  | "install_npm_package"
+  | "save_healing_recipe"
+  | "run_healing_recipe"
+  | "self_heal_project";
+
+type PendingApproval = {
+  id: string;
+  type: ApprovalActionType;
+  payload: Record<string, unknown>;
+  status: "pending" | "approved" | "rejected";
+  reason?: string;
+  createdAt: string;
+  reviewedAt?: string;
+  result?: unknown;
+};
+
 const MAX_MESSAGE_LENGTH = 262_144;
 const MAX_FILES = 8;
 const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
@@ -82,6 +100,7 @@ const RELAY_ALLOWED_ROOTS = [
 const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
 const TOOL_REGISTRY_PATH = path.join(process.cwd(), ".bizbot-tools.json");
 const HEALING_RECIPES_PATH = path.join(process.cwd(), ".bizbot-healing-recipes.json");
+const APPROVALS_PATH = path.join(process.cwd(), ".bizbot-approvals.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
 const MAX_HEALING_STEPS = 12;
@@ -283,6 +302,31 @@ function readHealingRecipes() {
 
 function writeHealingRecipes(recipes: HealingRecipe[]) {
   writeJsonArrayFile(HEALING_RECIPES_PATH, recipes);
+}
+
+function readApprovals() {
+  return readJsonArrayFile<PendingApproval>(APPROVALS_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.type === "string" && typeof entry.status === "string",
+  );
+}
+
+function writeApprovals(approvals: PendingApproval[]) {
+  writeJsonArrayFile(APPROVALS_PATH, approvals);
+}
+
+function createApprovalRequest(type: ApprovalActionType, payload: Record<string, unknown>, reason?: string) {
+  const approvals = readApprovals();
+  const approval: PendingApproval = {
+    id: `approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    payload,
+    reason,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+  approvals.unshift(approval);
+  writeApprovals(approvals);
+  return approval;
 }
 
 function validateHealingSteps(input: unknown) {
@@ -563,6 +607,35 @@ async function selfHealProject() {
     success: buildResult.exitCode === 0,
     steps,
   };
+}
+
+async function executeApprovalAction(approval: PendingApproval) {
+  switch (approval.type) {
+    case "register_tool":
+      return registerTool({
+        id: String(approval.payload.id || ""),
+        description: String(approval.payload.description || ""),
+        command: String(approval.payload.command || ""),
+        cwd: typeof approval.payload.cwd === "string" ? approval.payload.cwd : undefined,
+      });
+    case "install_npm_package":
+      return installNpmPackage(
+        String(approval.payload.packageName || ""),
+        Boolean(approval.payload.saveDev),
+      );
+    case "save_healing_recipe":
+      return saveHealingRecipe({
+        id: String(approval.payload.id || ""),
+        description: String(approval.payload.description || ""),
+        stepsJson: String(approval.payload.stepsJson || "[]"),
+      });
+    case "run_healing_recipe":
+      return runHealingRecipe(String(approval.payload.id || ""));
+    case "self_heal_project":
+      return selfHealProject();
+    default:
+      throw new Error(`Unsupported approval action "${(approval as PendingApproval).type}".`);
+  }
 }
 
 function getModelTools(): any[] {
@@ -1227,6 +1300,7 @@ function getAutonomyOverview() {
   return {
     registeredTools: readRegisteredTools(),
     healingRecipes: readHealingRecipes(),
+    approvals: readApprovals(),
     relay: {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
       allowedRoots: RELAY_ALLOWED_ROOTS,
@@ -1463,17 +1537,18 @@ async function resolveServerToolCall(call: ToolCall) {
   }
 
   if (call.name === "register_tool") {
+    const approval = createApprovalRequest("register_tool", {
+      id: String(call.args?.id || ""),
+      description: String(call.args?.description || ""),
+      command: String(call.args?.command || ""),
+      cwd: typeof call.args?.cwd === "string" ? call.args.cwd : undefined,
+    }, "Agent requested tool registration.");
     return {
       handled: true,
       response: {
         functionResponse: {
           name: "register_tool",
-          response: await registerTool({
-            id: String(call.args?.id || ""),
-            description: String(call.args?.description || ""),
-            command: String(call.args?.command || ""),
-            cwd: typeof call.args?.cwd === "string" ? call.args.cwd : undefined,
-          }),
+          response: approval,
         },
       },
     };
@@ -1492,15 +1567,16 @@ async function resolveServerToolCall(call: ToolCall) {
   }
 
   if (call.name === "install_npm_package") {
+    const approval = createApprovalRequest("install_npm_package", {
+      packageName: String(call.args?.packageName || ""),
+      saveDev: Boolean(call.args?.saveDev),
+    }, "Agent requested package install.");
     return {
       handled: true,
       response: {
         functionResponse: {
           name: "install_npm_package",
-          response: await installNpmPackage(
-            String(call.args?.packageName || ""),
-            Boolean(call.args?.saveDev),
-          ),
+          response: approval,
         },
       },
     };
@@ -1527,40 +1603,45 @@ async function resolveServerToolCall(call: ToolCall) {
   }
 
   if (call.name === "save_healing_recipe") {
+    const approval = createApprovalRequest("save_healing_recipe", {
+      id: String(call.args?.id || ""),
+      description: String(call.args?.description || ""),
+      stepsJson: String(call.args?.stepsJson || "[]"),
+    }, "Agent requested healing recipe save.");
     return {
       handled: true,
       response: {
         functionResponse: {
           name: "save_healing_recipe",
-          response: await saveHealingRecipe({
-            id: String(call.args?.id || ""),
-            description: String(call.args?.description || ""),
-            stepsJson: String(call.args?.stepsJson || "[]"),
-          }),
+          response: approval,
         },
       },
     };
   }
 
   if (call.name === "run_healing_recipe") {
+    const approval = createApprovalRequest("run_healing_recipe", {
+      id: String(call.args?.id || ""),
+    }, "Agent requested healing recipe execution.");
     return {
       handled: true,
       response: {
         functionResponse: {
           name: "run_healing_recipe",
-          response: await runHealingRecipe(String(call.args?.id || "")),
+          response: approval,
         },
       },
     };
   }
 
   if (call.name === "self_heal_project") {
+    const approval = createApprovalRequest("self_heal_project", {}, "Agent requested project self-heal.");
     return {
       handled: true,
       response: {
         functionResponse: {
           name: "self_heal_project",
-          response: await selfHealProject(),
+          response: approval,
         },
       },
     };
@@ -1710,13 +1791,13 @@ async function startServer() {
 
   app.post("/api/autonomy/tools", async (req, res) => {
     try {
-      const tool = await registerTool({
+      const approval = createApprovalRequest("register_tool", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         command: String(req.body?.command || ""),
         cwd: typeof req.body?.cwd === "string" ? req.body.cwd : undefined,
-      });
-      res.json(tool);
+      }, "Operator requested tool registration.");
+      res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown tool registration error.";
       res.status(400).json({ error: message });
@@ -1735,11 +1816,11 @@ async function startServer() {
 
   app.post("/api/autonomy/install-package", async (req, res) => {
     try {
-      const result = await installNpmPackage(
-        String(req.body?.packageName || ""),
-        Boolean(req.body?.saveDev),
-      );
-      res.json(result);
+      const approval = createApprovalRequest("install_npm_package", {
+        packageName: String(req.body?.packageName || ""),
+        saveDev: Boolean(req.body?.saveDev),
+      }, "Operator requested package install.");
+      res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown npm install error.";
       res.status(400).json({ error: message });
@@ -1748,12 +1829,12 @@ async function startServer() {
 
   app.post("/api/autonomy/healing-recipes", async (req, res) => {
     try {
-      const recipe = await saveHealingRecipe({
+      const approval = createApprovalRequest("save_healing_recipe", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         stepsJson: String(req.body?.stepsJson || "[]"),
-      });
-      res.json(recipe);
+      }, "Operator requested healing recipe save.");
+      res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown healing recipe save error.";
       res.status(400).json({ error: message });
@@ -1762,8 +1843,10 @@ async function startServer() {
 
   app.post("/api/autonomy/healing-recipes/run", async (req, res) => {
     try {
-      const result = await runHealingRecipe(String(req.body?.id || ""));
-      res.json(result);
+      const approval = createApprovalRequest("run_healing_recipe", {
+        id: String(req.body?.id || ""),
+      }, "Operator requested healing recipe execution.");
+      res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown healing recipe execution error.";
       res.status(400).json({ error: message });
@@ -1772,11 +1855,66 @@ async function startServer() {
 
   app.post("/api/autonomy/self-heal", async (_req, res) => {
     try {
-      const result = await selfHealProject();
-      res.json(result);
+      const approval = createApprovalRequest("self_heal_project", {}, "Operator requested project self-heal.");
+      res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown self-heal error.";
       res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/approvals/:id/approve", async (req, res) => {
+    try {
+      const approvals = readApprovals();
+      const targetIndex = approvals.findIndex((entry) => entry.id === String(req.params.id || ""));
+      if (targetIndex < 0) {
+        return res.status(404).json({ error: "Approval request not found." });
+      }
+      const approval = approvals[targetIndex];
+      if (approval.status !== "pending") {
+        return res.status(400).json({ error: `Approval is already ${approval.status}.` });
+      }
+
+      const result = await executeApprovalAction(approval);
+      approvals[targetIndex] = {
+        ...approval,
+        status: "approved",
+        reviewedAt: new Date().toISOString(),
+        result,
+      };
+      writeApprovals(approvals);
+      res.json(approvals[targetIndex]);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown approval execution error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/approvals/:id/reject", (req, res) => {
+    try {
+      const approvals = readApprovals();
+      const targetIndex = approvals.findIndex((entry) => entry.id === String(req.params.id || ""));
+      if (targetIndex < 0) {
+        return res.status(404).json({ error: "Approval request not found." });
+      }
+      const approval = approvals[targetIndex];
+      if (approval.status !== "pending") {
+        return res.status(400).json({ error: `Approval is already ${approval.status}.` });
+      }
+
+      approvals[targetIndex] = {
+        ...approval,
+        status: "rejected",
+        reviewedAt: new Date().toISOString(),
+        reason: typeof req.body?.reason === "string" && req.body.reason.trim()
+          ? req.body.reason.trim()
+          : "Rejected by operator.",
+      };
+      writeApprovals(approvals);
+      res.json(approvals[targetIndex]);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown approval rejection error.";
+      res.status(400).json({ error: message });
     }
   });
 

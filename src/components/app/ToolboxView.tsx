@@ -16,7 +16,7 @@ import {
   Wrench,
   Video,
 } from 'lucide-react';
-import { AutonomyService, type AutonomyOverview } from '../../services/autonomy';
+import { AutonomyService, type AutonomyOverview, type PendingApproval } from '../../services/autonomy';
 import { Badge, Button, Card, cn } from './ui';
 
 type ToolboxViewProps = {
@@ -41,6 +41,7 @@ const toolboxCards = [
 const initialOverview: AutonomyOverview = {
   registeredTools: [],
   healingRecipes: [],
+  approvals: [],
   relay: {
     allowedCommands: [],
     allowedRoots: [],
@@ -54,6 +55,15 @@ const initialOverview: AutonomyOverview = {
 
 function formatCommandResult(result: Record<string, unknown>) {
   const sections: string[] = [];
+  const hasCommandShape =
+    typeof result.exitCode === 'number'
+    || typeof result.stdout === 'string'
+    || typeof result.stderr === 'string';
+
+  if (!hasCommandShape) {
+    return JSON.stringify(result, null, 2);
+  }
+
   if (typeof result.exitCode === 'number') {
     sections.push(`Exit code: ${result.exitCode}`);
   }
@@ -67,6 +77,13 @@ function formatCommandResult(result: Record<string, unknown>) {
     return 'No command output was returned.';
   }
   return sections.join('\n\n');
+}
+
+function formatApprovalPayload(payload: Record<string, unknown>) {
+  return Object.entries(payload)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join('\n');
 }
 
 export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
@@ -103,6 +120,11 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     }
     return overview.relay.allowedCommands.join(', ');
   }, [overview.relay.allowedCommands]);
+
+  const pendingApprovals = useMemo(
+    () => overview.approvals.filter((approval) => approval.status === 'pending'),
+    [overview.approvals]
+  );
 
   const refreshOverview = async (silent = false) => {
     try {
@@ -142,10 +164,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       setToolForm({ id: '', description: '', command: '', cwd: '' });
       setActionState({
         kind: 'success',
-        title: `Tool "${result.id}" registered`,
-        detail: `${result.command}${result.cwd ? ` in ${result.cwd}` : ''}`,
+        title: `Tool registration proposed`,
+        detail: `Approval request ${result.id} is waiting in the queue.`,
       });
-      onLog?.(`Registered tool ${result.id}`, 'success');
+      onLog?.(`Queued tool registration approval ${result.id}`, 'info');
       await refreshOverview(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to register tool.';
@@ -159,11 +181,12 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       const result = await AutonomyService.installPackage(packageForm.packageName, packageForm.saveDev);
       setActionState({
         kind: 'success',
-        title: `Installed ${result.packageName}`,
-        detail: formatCommandResult(result as Record<string, unknown>),
+        title: `Package install proposed`,
+        detail: `Approval request ${result.id} is waiting in the queue.`,
       });
-      setSelectedOutput(formatCommandResult(result as Record<string, unknown>));
-      onLog?.(`Installed package ${result.packageName}`, 'success');
+      setSelectedOutput(formatApprovalPayload(result.payload));
+      onLog?.(`Queued package install approval ${result.id}`, 'info');
+      await refreshOverview(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to install package.';
       setActionState({ kind: 'error', title: 'Package install failed', detail: message });
@@ -176,10 +199,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       const recipe = await AutonomyService.saveHealingRecipe(recipeForm);
       setActionState({
         kind: 'success',
-        title: `Recipe "${recipe.id}" saved`,
-        detail: `${recipe.steps.length} recovery steps ready for autonomous use.`,
+        title: `Healing recipe proposed`,
+        detail: `Approval request ${recipe.id} is waiting in the queue.`,
       });
-      onLog?.(`Saved healing recipe ${recipe.id}`, 'success');
+      onLog?.(`Queued healing recipe approval ${recipe.id}`, 'info');
       await refreshOverview(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to save healing recipe.';
@@ -213,14 +236,15 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     try {
       setRunningRecipeId(id);
       const result = await AutonomyService.runHealingRecipe(id);
-      const detail = JSON.stringify(result.steps, null, 2);
+      const detail = formatApprovalPayload(result.payload);
       setSelectedOutput(detail);
       setActionState({
-        kind: result.success ? 'success' : 'error',
-        title: `Recipe "${id}" ${result.success ? 'completed' : 'stopped'}`,
+        kind: 'success',
+        title: `Recipe run proposed`,
         detail,
       });
-      onLog?.(`Ran healing recipe ${id}`, result.success ? 'success' : 'warn');
+      onLog?.(`Queued healing recipe run approval ${result.id}`, 'info');
+      await refreshOverview(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to run healing recipe.';
       setActionState({ kind: 'error', title: `Recipe "${id}" failed`, detail: message });
@@ -234,20 +258,59 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     try {
       setIsSelfHealing(true);
       const result = await AutonomyService.selfHealProject();
-      const detail = JSON.stringify(result.steps, null, 2);
+      const detail = result.id;
       setSelectedOutput(detail);
       setActionState({
-        kind: result.success ? 'success' : 'error',
-        title: result.success ? 'Self-heal passed' : 'Self-heal found issues',
-        detail,
+        kind: 'success',
+        title: 'Self-heal proposed',
+        detail: `Approval request ${result.id} is waiting in the queue.`,
       });
-      onLog?.('Ran project self-heal routine', result.success ? 'success' : 'warn');
+      onLog?.(`Queued self-heal approval ${result.id}`, 'info');
+      await refreshOverview(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to run self-heal routine.';
       setActionState({ kind: 'error', title: 'Self-heal failed', detail: message });
       onLog?.(`Self-heal failed: ${message}`, 'warn');
     } finally {
       setIsSelfHealing(false);
+    }
+  };
+
+  const handleApprove = async (approval: PendingApproval) => {
+    try {
+      const result = await AutonomyService.approveAction(approval.id);
+      const detail = result.result && typeof result.result === 'object'
+        ? formatCommandResult(result.result as Record<string, unknown>)
+        : JSON.stringify(result.result ?? {}, null, 2);
+      setSelectedOutput(detail);
+      setActionState({
+        kind: 'success',
+        title: `Approved ${approval.type}`,
+        detail,
+      });
+      onLog?.(`Approved ${approval.id}`, 'success');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to approve action.';
+      setActionState({ kind: 'error', title: 'Approval failed', detail: message });
+      onLog?.(`Approval failed: ${message}`, 'warn');
+    }
+  };
+
+  const handleReject = async (approval: PendingApproval) => {
+    try {
+      const result = await AutonomyService.rejectAction(approval.id, 'Rejected from toolbox control panel.');
+      setActionState({
+        kind: 'success',
+        title: `Rejected ${approval.type}`,
+        detail: result.reason || 'Rejected by operator.',
+      });
+      onLog?.(`Rejected ${approval.id}`, 'warn');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reject action.';
+      setActionState({ kind: 'error', title: 'Rejection failed', detail: message });
+      onLog?.(`Rejection failed: ${message}`, 'warn');
     }
   };
 
@@ -344,6 +407,50 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             </div>
           </Card>
         )}
+
+        <Card className="p-6 lg:p-8 space-y-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight">Approval Queue</h3>
+              <p className="text-sm text-zinc-500 mt-2">High-impact autonomy actions wait here until you approve or reject them.</p>
+            </div>
+            <Badge color={pendingApprovals.length > 0 ? 'rose' : 'lime'}>
+              {pendingApprovals.length > 0 ? `${pendingApprovals.length} Pending` : 'Queue Clear'}
+            </Badge>
+          </div>
+
+          <div className="grid gap-4">
+            {pendingApprovals.map((approval) => (
+              <Card key={approval.id} className="p-5 border-white/10">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <Badge color="rose">{approval.type}</Badge>
+                      <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+                        {new Date(approval.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-zinc-400">{approval.reason || 'Awaiting operator review.'}</p>
+                    <pre className="whitespace-pre-wrap break-words text-xs text-zinc-300 font-mono rounded-2xl bg-black/20 border border-white/5 px-4 py-3">
+                      {formatApprovalPayload(approval.payload)}
+                    </pre>
+                  </div>
+                  <div className="flex gap-3">
+                    <Button variant="secondary" icon={Play} onClick={() => void handleApprove(approval)}>
+                      Approve
+                    </Button>
+                    <Button variant="danger" onClick={() => void handleReject(approval)}>
+                      Reject
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+            {!isLoadingOverview && pendingApprovals.length === 0 && (
+              <div className="text-sm text-zinc-500">No high-impact actions are waiting for approval right now.</div>
+            )}
+          </div>
+        </Card>
 
         <div className="grid grid-cols-1 gap-8 xl:grid-cols-[1.25fr_0.95fr]">
           <div className="space-y-8">

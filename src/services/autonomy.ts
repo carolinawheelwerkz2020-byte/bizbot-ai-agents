@@ -32,9 +32,28 @@ export type SelfHealResult = {
   steps: Array<Record<string, unknown>>;
 };
 
+export type ApprovalActionType =
+  | 'register_tool'
+  | 'install_npm_package'
+  | 'save_healing_recipe'
+  | 'run_healing_recipe'
+  | 'self_heal_project';
+
+export type PendingApproval = {
+  id: string;
+  type: ApprovalActionType;
+  payload: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected';
+  reason?: string;
+  createdAt: string;
+  reviewedAt?: string;
+  result?: unknown;
+};
+
 export type AutonomyOverview = {
   registeredTools: RegisteredTool[];
   healingRecipes: HealingRecipe[];
+  approvals: PendingApproval[];
   relay: {
     allowedCommands: string[];
     allowedRoots: string[];
@@ -86,7 +105,7 @@ export const AutonomyService = {
     command: string;
     cwd?: string;
   }) {
-    return autonomyFetch<RegisteredTool>('/api/autonomy/tools', {
+    return autonomyFetch<PendingApproval>('/api/autonomy/tools', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -100,7 +119,7 @@ export const AutonomyService = {
   },
 
   installPackage(packageName: string, saveDev: boolean) {
-    return autonomyFetch<CommandResult & { packageName: string; saveDev: boolean }>('/api/autonomy/install-package', {
+    return autonomyFetch<PendingApproval>('/api/autonomy/install-package', {
       method: 'POST',
       body: JSON.stringify({ packageName, saveDev }),
     });
@@ -111,28 +130,37 @@ export const AutonomyService = {
     description: string;
     stepsJson: string;
   }) {
-    return autonomyFetch<HealingRecipe>('/api/autonomy/healing-recipes', {
+    return autonomyFetch<PendingApproval>('/api/autonomy/healing-recipes', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
 
   runHealingRecipe(id: string) {
-    return autonomyFetch<{
-      id: string;
-      description: string;
-      success: boolean;
-      steps: Array<Record<string, unknown>>;
-    }>('/api/autonomy/healing-recipes/run', {
+    return autonomyFetch<PendingApproval>('/api/autonomy/healing-recipes/run', {
       method: 'POST',
       body: JSON.stringify({ id }),
     });
   },
 
   selfHealProject() {
-    return autonomyFetch<SelfHealResult>('/api/autonomy/self-heal', {
+    return autonomyFetch<PendingApproval>('/api/autonomy/self-heal', {
       method: 'POST',
       body: JSON.stringify({}),
+    });
+  },
+
+  approveAction(id: string) {
+    return autonomyFetch<PendingApproval>(`/api/autonomy/approvals/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  rejectAction(id: string, reason?: string) {
+    return autonomyFetch<PendingApproval>(`/api/autonomy/approvals/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
     });
   },
 };
