@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { lazy, Suspense, useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Loader2,
   Menu,
@@ -16,11 +16,8 @@ import { uploadFileToGeminiViaServer } from './services/upload';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './lib/firebase';
 import { PersistenceService } from './services/persistence';
-import { AgentsView } from './components/app/AgentsView';
 import { ChatView } from './components/app/ChatView';
 import { Sidebar } from './components/app/Sidebar';
-import { ToolboxView } from './components/app/ToolboxView';
-import { WorkflowsView } from './components/app/WorkflowsView';
 import type { AppView, Message, SystemLog, WorkflowState } from './components/app/types';
 import { AgentAvatar, Badge } from './components/app/ui';
 
@@ -38,6 +35,21 @@ type RelayFunctionResult = {
     response: unknown;
   };
 };
+
+const AgentsView = lazy(async () => {
+  const module = await import('./components/app/AgentsView');
+  return { default: module.AgentsView };
+});
+
+const WorkflowsView = lazy(async () => {
+  const module = await import('./components/app/WorkflowsView');
+  return { default: module.WorkflowsView };
+});
+
+const ToolboxView = lazy(async () => {
+  const module = await import('./components/app/ToolboxView');
+  return { default: module.ToolboxView };
+});
 
 function messageToHistoryParts(message: Message): ChatHistoryEntry | null {
   if (message.role === 'system') return null;
@@ -82,6 +94,17 @@ function buildHistoryFromMessages(messages: Message[]): ChatHistoryEntry[] {
   return messages
     .map(messageToHistoryParts)
     .filter((entry): entry is ChatHistoryEntry => Boolean(entry));
+}
+
+function ViewLoadingFallback() {
+  return (
+    <div className="flex-1 flex items-center justify-center px-6">
+      <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-sm font-medium text-zinc-400">
+        <Loader2 size={18} className="animate-spin text-cyber-blue" />
+        Loading workspace module...
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -534,18 +557,24 @@ export default function App() {
             )}
 
             {activeView === 'agents' && (
-              <AgentsView
-                setActiveView={setActiveView}
-                setSelectedAgent={setSelectedAgent}
-              />
+              <Suspense fallback={<ViewLoadingFallback />}>
+                <AgentsView
+                  setActiveView={setActiveView}
+                  setSelectedAgent={setSelectedAgent}
+                />
+              </Suspense>
             )}
 
             {activeView === 'workflows' && (
-              <WorkflowsView executeWorkflow={executeWorkflow} />
+              <Suspense fallback={<ViewLoadingFallback />}>
+                <WorkflowsView executeWorkflow={executeWorkflow} />
+              </Suspense>
             )}
 
             {activeView === 'toolbox' && (
-              <ToolboxView handleLaunchTool={handleLaunchTool} />
+              <Suspense fallback={<ViewLoadingFallback />}>
+                <ToolboxView handleLaunchTool={handleLaunchTool} />
+              </Suspense>
             )}
           </AnimatePresence>
 
