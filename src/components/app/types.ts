@@ -35,6 +35,7 @@ export type RunSummary = {
   id: string;
   agentId: string;
   title: string;
+  sourcePrompt: string;
   startedAt: Date;
   completedAt: Date;
   status: 'completed' | 'failed';

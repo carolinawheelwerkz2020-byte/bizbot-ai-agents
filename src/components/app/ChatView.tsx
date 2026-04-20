@@ -41,6 +41,7 @@ type ChatViewProps = {
   workflowState: WorkflowState | null;
   executeWorkflow: (workflow: WorkflowState['workflow']) => Promise<void>;
   runSummaries: RunSummary[];
+  handleReplayRun: (runSummary: RunSummary) => Promise<void>;
 };
 
 export function ChatView({
@@ -60,6 +61,7 @@ export function ChatView({
   workflowState,
   executeWorkflow,
   runSummaries,
+  handleReplayRun,
 }: ChatViewProps) {
   const [runSearch, setRunSearch] = useState('');
   const [runFilter, setRunFilter] = useState<'all' | 'failed' | 'approvals' | 'workflow'>('all');
@@ -164,6 +166,16 @@ export function ChatView({
                               <span>{summary.approvalCount} approval{summary.approvalCount === 1 ? '' : 's'}</span>
                               <span>{summary.workflowLaunched ? 'workflow launched' : 'no workflow'}</span>
                             </div>
+                            {summary.sourcePrompt && (
+                              <div className="pt-1">
+                                <button
+                                  onClick={() => void handleReplayRun(summary)}
+                                  className="px-4 py-2 rounded-2xl bg-cyber-blue/10 border border-cyber-blue/20 text-cyber-blue text-[10px] font-black uppercase tracking-[0.2em] hover:bg-cyber-blue hover:text-white transition-all"
+                                >
+                                  Replay Run
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">

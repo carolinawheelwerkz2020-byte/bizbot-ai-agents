@@ -665,6 +665,7 @@ export default function App() {
             id: `run-${Date.now()}`,
             agentId: finalRunAgent.id,
             title: text.slice(0, 72) || response.text.slice(0, 72) || 'Autonomous run',
+            sourcePrompt: text,
             startedAt: runStartedAt,
             completedAt: new Date(),
             status: 'completed' as const,
@@ -687,6 +688,7 @@ export default function App() {
         id: `run-${Date.now()}`,
         agentId: agent.id,
         title: text.slice(0, 72) || 'Autonomous run',
+        sourcePrompt: text,
         startedAt: runStartedAt,
         completedAt: new Date(),
         status: 'failed' as const,
@@ -932,6 +934,14 @@ export default function App() {
     setAttachedFiles((prev) => prev.filter((_, fileIndex) => fileIndex !== index));
   };
 
+  const handleReplayRun = async (runSummary: RunSummary) => {
+    const replayAgent = AGENTS.find((agent) => agent.id === runSummary.agentId) || selectedAgent;
+    setSelectedAgent(replayAgent);
+    setActiveView('chat');
+    setInput(runSummary.sourcePrompt);
+    await handleSendMessage(runSummary.sourcePrompt, replayAgent);
+  };
+
   return (
     <div className="flex h-screen bg-deep-space text-zinc-100 overflow-hidden font-sans selection:bg-cyber-blue/40 selection:text-white">
       {/* Dynamic Background */}
@@ -1035,6 +1045,7 @@ export default function App() {
                 setInput={setInput}
                 toggleListening={toggleListening}
                 runSummaries={runSummaries}
+                handleReplayRun={handleReplayRun}
                 workflowState={workflowState}
               />
             )}
