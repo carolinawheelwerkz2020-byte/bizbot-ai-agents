@@ -24,6 +24,9 @@ import { AgentAvatar, Badge } from './components/app/ui';
 
 // --- Constants ---
 const INLINE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_AUTONOMOUS_TURNS = 10;
+const MAX_AGENT_HANDOFFS = 4;
+const MAX_REPEAT_ROUTE_SIGNATURES = 2;
 
 type RelayFunctionCall = {
   name: 'bash' | 'read_file' | 'write_file' | 'edit_file' | 'route_to_agent';
@@ -106,6 +109,10 @@ function buildHistoryFromMessages(messages: Message[]): ChatHistoryEntry[] {
 
 function normalizeErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Unknown communication error.';
+}
+
+function normalizeSupervisorText(text: string) {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function presentError(error: unknown, context: 'chat' | 'upload' | 'relay' | 'workflow'): ErrorPresentation {
@@ -232,6 +239,54 @@ function presentError(error: unknown, context: 'chat' | 'upload' | 'relay' | 'wo
     };
   }
 
+  if (normalized.includes('handoff limit reached')) {
+    return {
+      title: 'Handoff limit reached',
+      summary: 'The supervisor stopped the run because agents were handing work off too many times without finishing.',
+      steps: [
+        'Tighten the task so the first agent has a clearer target.',
+        'Reduce routing behavior or increase the handoff limit only if you really need deeper chains.',
+      ],
+      logMessage: 'Supervisor stopped excessive agent handoffs.',
+    };
+  }
+
+  if (normalized.includes('repeat routing loop detected')) {
+    return {
+      title: 'Routing loop stopped',
+      summary: 'The supervisor detected the same handoff pattern repeating and halted the run.',
+      steps: [
+        'Adjust the agent instructions so the specialist produces an answer instead of re-routing.',
+        'Try a more specific user prompt with a clearer desired output.',
+      ],
+      logMessage: 'Supervisor stopped a repeated routing loop.',
+    };
+  }
+
+  if (normalized.includes('autonomous turn limit reached')) {
+    return {
+      title: 'Autonomous turn limit reached',
+      summary: 'The run used too many autonomous turns without landing on a final answer.',
+      steps: [
+        'Retry with a more focused task.',
+        'If the task truly needs more depth, raise the turn limit carefully.',
+      ],
+      logMessage: 'Supervisor stopped an overlong autonomous run.',
+    };
+  }
+
+  if (normalized.includes('ended without producing a final response')) {
+    return {
+      title: 'No final output produced',
+      summary: 'The agent chain stopped before producing a usable final answer.',
+      steps: [
+        'Retry the task once.',
+        'If it repeats, simplify the ask or inspect the last tool/handoff step in the timeline.',
+      ],
+      logMessage: 'Autonomous run ended without final output.',
+    };
+  }
+
   return {
     title: context === 'upload' ? 'Upload failed' : context === 'workflow' ? 'Workflow interrupted' : 'Request failed',
     summary: message,
@@ -351,8 +406,16 @@ export default function App() {
       let lastText = text;
       let lastFiles = newMsg.files;
       let nextToolResults: RelayFunctionResult[] | undefined = undefined;
+      let autonomousTurnCount = 0;
+      let handoffCount = 0;
+      const routeSignatureCounts = new Map<string, number>();
 
       while (isRunning) {
+        autonomousTurnCount += 1;
+        if (autonomousTurnCount > MAX_AUTONOMOUS_TURNS) {
+          throw new Error('Autonomous turn limit reached before producing a final response.');
+        }
+
         const response = await chatWithAgent(currentAgent, lastText, currentHistory, lastFiles, nextToolResults);
         
         // Update history with what we just sent so the next turn has context
@@ -388,6 +451,19 @@ export default function App() {
                   throw new Error(`Unknown target agent "${call.args.agentId}".`);
                 }
 
+                handoffCount += 1;
+                if (handoffCount > MAX_AGENT_HANDOFFS) {
+                  throw new Error('Handoff limit reached before producing a final response.');
+                }
+
+                const routePrompt = typeof call.args.prompt === 'string' ? call.args.prompt : '';
+                const routeSignature = `${targetAgent.id}::${normalizeSupervisorText(routePrompt)}`;
+                const seenCount = (routeSignatureCounts.get(routeSignature) || 0) + 1;
+                routeSignatureCounts.set(routeSignature, seenCount);
+                if (seenCount > MAX_REPEAT_ROUTE_SIGNATURES) {
+                  throw new Error(`Repeat routing loop detected for ${targetAgent.name}.`);
+                }
+
                 currentAgent = targetAgent;
                 routed = true;
                 setSelectedAgent(targetAgent);
@@ -399,6 +475,7 @@ export default function App() {
                   content: `Handoff complete. Continuing with ${targetAgent.name}.`,
                   agentId: targetAgent.id,
                   reason: call.args.reason || 'Specialist routing.',
+                  prompt: routePrompt,
                 };
               } else if (call.name === 'bash') {
                 result = await RelayBridge.exec(call.args.command, call.args.workdir);
@@ -476,7 +553,7 @@ export default function App() {
           }
           isRunning = false;
         } else {
-          isRunning = false;
+          throw new Error('Autonomous run ended without producing a final response.');
         }
       }
     } catch (err) {
@@ -613,7 +690,10 @@ export default function App() {
 
       try {
         const response = await chatWithAgent(agent, prompt, [], []);
-        const responseText = response.text || 'No response generated.';
+        const responseText = response.text;
+        if (!responseText?.trim()) {
+          throw new Error('Autonomous run ended without producing a final response.');
+        }
         allOutputs.push(responseText);
         setWorkflowState(prev => prev ? {
           ...prev,
