@@ -9,6 +9,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
+import { authHeaderObject } from '../lib/authHeaders';
 import type { AttachedFile } from './gemini';
 import type { HandoffPlan } from './handoffPlan';
 import type { RunSummary, RunTemplate } from '../components/app/types';
@@ -91,6 +92,35 @@ function writeLocalRunTemplates(runTemplates: RunTemplate[]) {
   }
 }
 
+async function parseApiResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let errorMessage = `Error ${response.status}: ${response.statusText}`;
+    try {
+      const errorData = await response.json() as { error?: string; details?: string };
+      errorMessage = errorData.error || errorData.details || errorMessage;
+    } catch {
+      // Ignore non-JSON responses.
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function historyFetch<T>(input: string, init?: RequestInit) {
+  const authHeaders = await authHeaderObject();
+  const response = await fetch(input, {
+    ...init,
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...authHeaders,
+      ...init?.headers,
+    },
+  });
+
+  return parseApiResponse<T>(response);
+}
+
 export const PersistenceService = {
   async saveMessage(agentId: string, message: PersistedMessage) {
     if (!db || !auth?.currentUser) return;
@@ -155,22 +185,68 @@ export const PersistenceService = {
   },
 
   async getRunSummaries(): Promise<RunSummary[]> {
-    return readLocalRunSummaries();
+    try {
+      const data = await historyFetch<{ runs: Array<Omit<RunSummary, 'startedAt' | 'completedAt'> & { startedAt: string; completedAt: string }> }>('/api/history/runs');
+      const runs = data.runs.map((summary) => ({
+        ...summary,
+        startedAt: new Date(summary.startedAt),
+        completedAt: new Date(summary.completedAt),
+      }));
+      writeLocalRunSummaries(runs);
+      return runs;
+    } catch {
+      return readLocalRunSummaries();
+    }
   },
 
   async saveRunSummary(runSummary: RunSummary) {
     const existing = readLocalRunSummaries();
-    const next = [runSummary, ...existing].slice(0, 12);
+    const next = [runSummary, ...existing.filter((entry) => entry.id !== runSummary.id)].slice(0, 12);
     writeLocalRunSummaries(next);
+
+    try {
+      await historyFetch('/api/history/runs', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...runSummary,
+          startedAt: runSummary.startedAt.toISOString(),
+          completedAt: runSummary.completedAt.toISOString(),
+        }),
+      });
+    } catch (error) {
+      console.error('Error saving run summary to server history:', error);
+    }
   },
 
   async getRunTemplates(): Promise<RunTemplate[]> {
-    return readLocalRunTemplates();
+    try {
+      const data = await historyFetch<{ templates: Array<Omit<RunTemplate, 'createdAt'> & { createdAt: string }> }>('/api/history/templates');
+      const templates = data.templates.map((template) => ({
+        ...template,
+        createdAt: new Date(template.createdAt),
+      }));
+      writeLocalRunTemplates(templates);
+      return templates;
+    } catch {
+      return readLocalRunTemplates();
+    }
   },
 
   async saveRunTemplate(runTemplate: RunTemplate) {
     const existing = readLocalRunTemplates().filter((template) => template.id !== runTemplate.id);
     const next = [runTemplate, ...existing].slice(0, 20);
     writeLocalRunTemplates(next);
+
+    try {
+      await historyFetch('/api/history/templates', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...runTemplate,
+          createdAt: runTemplate.createdAt.toISOString(),
+        }),
+      });
+    } catch (error) {
+      console.error('Error saving run template to server history:', error);
+    }
   },
 };

@@ -84,6 +84,30 @@ type PendingApproval = {
   result?: unknown;
 };
 
+type StoredRunSummary = {
+  id: string;
+  agentId: string;
+  title: string;
+  sourcePrompt: string;
+  startedAt: string;
+  completedAt: string;
+  status: "completed" | "failed";
+  handoffCount: number;
+  approvalCount: number;
+  workflowLaunched: boolean;
+  notes: string;
+};
+
+type StoredRunTemplate = {
+  id: string;
+  name: string;
+  agentId: string;
+  prompt: string;
+  createdAt: string;
+  sourceRunId: string;
+  notes?: string;
+};
+
 const MAX_MESSAGE_LENGTH = 262_144;
 const MAX_FILES = 8;
 const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
@@ -106,6 +130,8 @@ const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
 const TOOL_REGISTRY_PATH = path.join(process.cwd(), ".bizbot-tools.json");
 const HEALING_RECIPES_PATH = path.join(process.cwd(), ".bizbot-healing-recipes.json");
 const APPROVALS_PATH = path.join(process.cwd(), ".bizbot-approvals.json");
+const RUN_HISTORY_PATH = path.join(process.cwd(), ".bizbot-run-history.json");
+const RUN_TEMPLATES_PATH = path.join(process.cwd(), ".bizbot-run-templates.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
 const MAX_HEALING_STEPS = 12;
@@ -318,6 +344,26 @@ function readApprovals() {
 
 function writeApprovals(approvals: PendingApproval[]) {
   writeJsonArrayFile(APPROVALS_PATH, approvals);
+}
+
+function readRunHistory() {
+  return readJsonArrayFile<StoredRunSummary>(RUN_HISTORY_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.agentId === "string" && typeof entry.title === "string",
+  );
+}
+
+function writeRunHistory(entries: StoredRunSummary[]) {
+  writeJsonArrayFile(RUN_HISTORY_PATH, entries);
+}
+
+function readRunTemplates() {
+  return readJsonArrayFile<StoredRunTemplate>(RUN_TEMPLATES_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.name === "string" && typeof entry.prompt === "string",
+  );
+}
+
+function writeRunTemplates(entries: StoredRunTemplate[]) {
+  writeJsonArrayFile(RUN_TEMPLATES_PATH, entries);
 }
 
 function createApprovalRequest(type: ApprovalActionType, payload: Record<string, unknown>, reason?: string) {
@@ -1808,6 +1854,78 @@ async function startServer() {
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown autonomy overview error.";
       res.status(500).json({ error: message });
+    }
+  });
+
+  app.get("/api/history/runs", (_req, res) => {
+    try {
+      res.json({ runs: readRunHistory() });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown run history read error.";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/history/runs", (req, res) => {
+    try {
+      const payload = req.body as Partial<StoredRunSummary>;
+      if (!payload?.id || !payload.agentId || !payload.title || !payload.startedAt || !payload.completedAt || !payload.status) {
+        return res.status(400).json({ error: "Missing required run summary fields." });
+      }
+
+      const history = readRunHistory().filter((entry) => entry.id !== payload.id);
+      const nextEntry: StoredRunSummary = {
+        id: String(payload.id),
+        agentId: String(payload.agentId),
+        title: String(payload.title),
+        sourcePrompt: String(payload.sourcePrompt || ""),
+        startedAt: String(payload.startedAt),
+        completedAt: String(payload.completedAt),
+        status: payload.status === "failed" ? "failed" : "completed",
+        handoffCount: Number(payload.handoffCount || 0),
+        approvalCount: Number(payload.approvalCount || 0),
+        workflowLaunched: Boolean(payload.workflowLaunched),
+        notes: String(payload.notes || ""),
+      };
+      writeRunHistory([nextEntry, ...history].slice(0, 100));
+      res.json(nextEntry);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown run history write error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.get("/api/history/templates", (_req, res) => {
+    try {
+      res.json({ templates: readRunTemplates() });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown template read error.";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/history/templates", (req, res) => {
+    try {
+      const payload = req.body as Partial<StoredRunTemplate>;
+      if (!payload?.id || !payload.name || !payload.agentId || !payload.prompt || !payload.createdAt || !payload.sourceRunId) {
+        return res.status(400).json({ error: "Missing required run template fields." });
+      }
+
+      const templates = readRunTemplates().filter((entry) => entry.id !== payload.id);
+      const nextEntry: StoredRunTemplate = {
+        id: String(payload.id),
+        name: String(payload.name),
+        agentId: String(payload.agentId),
+        prompt: String(payload.prompt),
+        createdAt: String(payload.createdAt),
+        sourceRunId: String(payload.sourceRunId),
+        notes: typeof payload.notes === "string" ? payload.notes : undefined,
+      };
+      writeRunTemplates([nextEntry, ...templates].slice(0, 100));
+      res.json(nextEntry);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown template write error.";
+      res.status(400).json({ error: message });
     }
   });
 
