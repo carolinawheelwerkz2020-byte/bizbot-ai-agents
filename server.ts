@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import os from "node:os";
 import path from "path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "url";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -59,6 +59,7 @@ const RELAY_ALLOWED_ROOTS = [
   path.resolve(process.env.RELAY_ROOT || process.cwd()),
 ];
 const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
+const MAX_FETCHED_PAGE_CHARS = 12_000;
 
 function ensureFirebaseAdmin() {
   if (admin.apps.length > 0) return;
@@ -293,9 +294,110 @@ function getModelTools(): any[] {
             required: ["agentId", "prompt"],
           },
         },
+        {
+          name: "open_browser",
+          description: "Open a URL in the user's default browser.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The http or https URL to open." },
+            },
+            required: ["url"],
+          },
+        },
+        {
+          name: "fetch_url",
+          description: "Fetch and read page content from a URL so the agent can inspect a webpage.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The http or https URL to fetch." },
+            },
+            required: ["url"],
+          },
+        },
       ],
     },
   ];
+}
+
+function parseHttpUrl(input: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new Error("A valid http or https URL is required.");
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Only http and https URLs are allowed.");
+  }
+
+  return parsed;
+}
+
+function htmlToText(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function openBrowserUrl(url: string) {
+  const safeUrl = parseHttpUrl(url).toString();
+
+  if (process.platform === "win32") {
+    const child = spawn("cmd", ["/c", "start", "", safeUrl], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    return `Opened ${safeUrl} in the default browser.`;
+  }
+
+  if (process.platform === "darwin") {
+    const child = spawn("open", [safeUrl], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    return `Opened ${safeUrl} in the default browser.`;
+  }
+
+  const child = spawn("xdg-open", [safeUrl], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return `Opened ${safeUrl} in the default browser.`;
+}
+
+async function fetchUrlContent(url: string) {
+  const safeUrl = parseHttpUrl(url).toString();
+  const response = await fetch(safeUrl, {
+    headers: {
+      "User-Agent": "BizBot-Agent/1.0",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  const normalized = contentType.includes("html") ? htmlToText(raw) : raw.trim();
+
+  return {
+    url: safeUrl,
+    contentType,
+    content: normalized.slice(0, MAX_FETCHED_PAGE_CHARS),
+  };
 }
 
 function readLocalMemoryStore() {
@@ -375,6 +477,31 @@ async function resolveServerToolCall(call: ToolCall) {
         functionResponse: {
           name: "update_neural_memory",
           response: { content: await writeNeuralMemory(String(call.args?.fact || ""), typeof call.args?.category === "string" ? call.args.category : undefined) },
+        },
+      },
+    };
+  }
+
+  if (call.name === "open_browser") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "open_browser",
+          response: { content: await openBrowserUrl(String(call.args?.url || "")) },
+        },
+      },
+    };
+  }
+
+  if (call.name === "fetch_url") {
+    const page = await fetchUrlContent(String(call.args?.url || ""));
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "fetch_url",
+          response: page,
         },
       },
     };
