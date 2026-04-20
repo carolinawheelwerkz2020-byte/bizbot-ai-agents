@@ -1346,6 +1346,17 @@ async function writeNeuralMemory(fact: string, category?: string) {
   return "Fact saved to neural memory.";
 }
 
+function isPendingApproval(value: unknown): value is PendingApproval {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string"
+    && typeof candidate.type === "string"
+    && candidate.status === "pending"
+    && typeof candidate.payload === "object"
+  );
+}
+
 async function resolveServerToolCall(call: ToolCall) {
   if (call.name === "get_neural_memory") {
     return {
@@ -1551,6 +1562,7 @@ async function resolveServerToolCall(call: ToolCall) {
           response: approval,
         },
       },
+      approval,
     };
   }
 
@@ -1579,6 +1591,7 @@ async function resolveServerToolCall(call: ToolCall) {
           response: approval,
         },
       },
+      approval,
     };
   }
 
@@ -1616,6 +1629,7 @@ async function resolveServerToolCall(call: ToolCall) {
           response: approval,
         },
       },
+      approval,
     };
   }
 
@@ -1631,6 +1645,7 @@ async function resolveServerToolCall(call: ToolCall) {
           response: approval,
         },
       },
+      approval,
     };
   }
 
@@ -1644,6 +1659,7 @@ async function resolveServerToolCall(call: ToolCall) {
           response: approval,
         },
       },
+      approval,
     };
   }
 
@@ -1964,6 +1980,7 @@ async function startServer() {
 
       let response = (await model.generateContent({ contents })).response;
       const initialFunctionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
+      const pendingApprovals: PendingApproval[] = [];
 
       if (initialFunctionCalls && initialFunctionCalls.length > 0) {
         const serverToolResponses: Array<{ functionResponse: { name: string; response: unknown } }> = [];
@@ -1973,13 +1990,19 @@ async function startServer() {
           const resolution = await resolveServerToolCall(call);
           if (resolution.handled) {
             serverToolResponses.push(resolution.response);
+            if (isPendingApproval(resolution.approval)) {
+              pendingApprovals.push(resolution.approval);
+            }
           } else {
             clientToolCalls.push(call);
           }
         }
 
         if (clientToolCalls.length > 0) {
-          return res.json({ functionCalls: clientToolCalls });
+          return res.json({
+            functionCalls: clientToolCalls,
+            pendingApprovals: pendingApprovals.length > 0 ? pendingApprovals : undefined,
+          });
         }
 
         if (serverToolResponses.length > 0) {
@@ -1999,6 +2022,7 @@ async function startServer() {
       res.json({
         text: response.text(),
         functionCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
+        pendingApprovals: pendingApprovals.length > 0 ? pendingApprovals : undefined,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown chat error.";

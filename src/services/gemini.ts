@@ -342,6 +342,14 @@ export interface ChatHistoryEntry {
 export interface ChatResponse {
   text?: string;
   functionCalls?: any[];
+  pendingApprovals?: Array<{
+    id: string;
+    type: string;
+    payload: Record<string, unknown>;
+    status: 'pending' | 'approved' | 'rejected';
+    reason?: string;
+    createdAt: string;
+  }>;
 }
 
 const AUTONOMOUS_AGENT_APPENDIX = `

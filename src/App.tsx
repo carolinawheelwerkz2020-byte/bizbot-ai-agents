@@ -47,6 +47,15 @@ type ErrorPresentation = {
   logMessage: string;
 };
 
+type PendingApprovalNotice = {
+  id: string;
+  type: string;
+  payload: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected';
+  reason?: string;
+  createdAt: string;
+};
+
 const AgentsView = lazy(async () => {
   const module = await import('./components/app/AgentsView');
   return { default: module.AgentsView };
@@ -323,6 +332,34 @@ function createWorkflowState(workflow: WorkflowShape): WorkflowState {
   };
 }
 
+function formatApprovalPayload(payload: Record<string, unknown>) {
+  const entries = Object.entries(payload).filter(([, value]) => value !== undefined && value !== '');
+  if (entries.length === 0) {
+    return 'No extra payload details were provided.';
+  }
+
+  return entries
+    .map(([key, value]) => `- \`${key}\`: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join('\n');
+}
+
+function createApprovalSystemMessage(approval: PendingApprovalNotice) {
+  return [
+    '### Approval Needed',
+    '',
+    `An autonomous action is waiting for operator approval in the Toolbox queue.`,
+    '',
+    `- Request ID: \`${approval.id}\``,
+    `- Action: \`${approval.type}\``,
+    `- Created: ${new Date(approval.createdAt).toLocaleString()}`,
+    '',
+    '**Requested payload**',
+    formatApprovalPayload(approval.payload),
+    '',
+    'Open the Toolbox view to approve or reject it.',
+  ].join('\n');
+}
+
 function ViewLoadingFallback() {
   return (
     <div className="flex-1 flex items-center justify-center px-6">
@@ -409,6 +446,7 @@ export default function App() {
       let autonomousTurnCount = 0;
       let handoffCount = 0;
       const routeSignatureCounts = new Map<string, number>();
+      const surfacedApprovalIds = new Set<string>();
 
       while (isRunning) {
         autonomousTurnCount += 1;
@@ -417,6 +455,23 @@ export default function App() {
         }
 
         const response = await chatWithAgent(currentAgent, lastText, currentHistory, lastFiles, nextToolResults);
+
+        if (response.pendingApprovals?.length) {
+          const freshApprovals = response.pendingApprovals.filter(
+            (approval) => !surfacedApprovalIds.has(approval.id)
+          );
+
+          for (const approval of freshApprovals) {
+            surfacedApprovalIds.add(approval.id);
+            const systemNotice: Message = {
+              role: 'system',
+              content: createApprovalSystemMessage(approval),
+              timestamp: new Date(),
+            };
+            setMessages((prev) => [...prev, systemNotice]);
+            addLog(`Approval queued: ${approval.type}`, 'warn');
+          }
+        }
         
         // Update history with what we just sent so the next turn has context
         if (nextToolResults) {
