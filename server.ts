@@ -61,7 +61,9 @@ const RELAY_ALLOWED_ROOTS = [
 ];
 const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
+const MAX_CRAWL_PAGES = 20;
 const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
+const BROWSER_ARTIFACTS_DIR = path.join(process.cwd(), ".browser-artifacts");
 
 let browserSession: Browser | null = null;
 let browserPageSession: Page | null = null;
@@ -382,6 +384,47 @@ function getModelTools(): any[] {
             properties: {},
           },
         },
+        {
+          name: "browser_screenshot",
+          description: "Capture a screenshot of the current browser session page.",
+          parameters: {
+            type: "object",
+            properties: {
+              fullPage: { type: "boolean", description: "Capture the full page instead of only the viewport." },
+            },
+          },
+        },
+        {
+          name: "browser_list_interactives",
+          description: "List clickable and form elements on the current browser page to help choose selectors.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
+          name: "seo_audit_url",
+          description: "Run a lightweight SEO audit for a single URL.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to audit." },
+            },
+            required: ["url"],
+          },
+        },
+        {
+          name: "crawl_site",
+          description: "Crawl a site starting from a URL and return a same-origin page summary for SEO review.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The start URL for crawling." },
+              maxPages: { type: "number", description: "Maximum number of pages to crawl, capped by the server." },
+            },
+            required: ["url"],
+          },
+        },
       ],
     },
   ];
@@ -411,6 +454,48 @@ function htmlToText(html: string) {
     .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function ensureBrowserArtifactsDir() {
+  fs.mkdirSync(BROWSER_ARTIFACTS_DIR, { recursive: true });
+}
+
+function extractHtmlTitle(html: string) {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match?.[1]?.replace(/\s+/g, " ").trim() || "";
+}
+
+function extractMetaContent(html: string, matcher: RegExp) {
+  const tagMatch = html.match(matcher);
+  return tagMatch?.[1]?.replace(/\s+/g, " ").trim() || "";
+}
+
+function extractHeadings(html: string) {
+  const matches = [...html.matchAll(/<h1[^>]*>([\s\S]*?)<\/h1>/gi)];
+  return matches.map((match) => htmlToText(match[1] || "")).filter(Boolean);
+}
+
+function extractCanonical(html: string) {
+  const match = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']/i)
+    || html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
+  return match?.[1] || "";
+}
+
+function extractLinks(html: string, baseUrl: URL) {
+  const links = new Set<string>();
+  for (const match of html.matchAll(/<a[^>]+href=["']([^"']+)["']/gi)) {
+    const href = match[1]?.trim();
+    if (!href) continue;
+    try {
+      const resolved = new URL(href, baseUrl);
+      if (resolved.protocol === "http:" || resolved.protocol === "https:") {
+        links.add(resolved.toString());
+      }
+    } catch {
+      // Ignore malformed links.
+    }
+  }
+  return [...links];
 }
 
 async function openBrowserUrl(url: string) {
@@ -492,6 +577,147 @@ async function browserReadState() {
     title,
     url,
     content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+  };
+}
+
+async function browserListInteractives() {
+  const page = await ensureBrowserPage();
+  return page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [onclick]'));
+    return nodes.slice(0, 100).map((node, index) => {
+      const element = node as HTMLElement;
+      const tag = element.tagName.toLowerCase();
+      const id = element.id ? `#${element.id}` : '';
+      const classes = element.className && typeof element.className === 'string'
+        ? `.${element.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+        : '';
+      const selector = id || `${tag}${classes}`;
+      const text = (element.innerText || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim();
+      return {
+        index,
+        tag,
+        selector,
+        text: text.slice(0, 120),
+      };
+    });
+  });
+}
+
+async function browserScreenshot(fullPage?: boolean) {
+  ensureBrowserArtifactsDir();
+  const page = await ensureBrowserPage();
+  const filename = `browser-shot-${Date.now()}.png`;
+  const outputPath = path.join(BROWSER_ARTIFACTS_DIR, filename);
+  await page.screenshot({
+    path: outputPath,
+    fullPage: Boolean(fullPage),
+  });
+  return {
+    path: outputPath,
+    url: page.url(),
+    title: await page.title().catch(() => ""),
+  };
+}
+
+async function seoAuditUrl(url: string) {
+  const safeUrl = parseHttpUrl(url);
+  const response = await fetch(safeUrl, {
+    headers: { "User-Agent": "BizBot-Agent/1.0" },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to audit URL: ${response.status} ${response.statusText}`);
+  }
+
+  const html = await response.text();
+  const title = extractHtmlTitle(html);
+  const description = extractMetaContent(
+    html,
+    /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i,
+  ) || extractMetaContent(
+    html,
+    /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i,
+  );
+  const canonical = extractCanonical(html);
+  const h1s = extractHeadings(html);
+  const robots = extractMetaContent(
+    html,
+    /<meta[^>]+name=["']robots["'][^>]+content=["']([^"']*)["']/i,
+  ) || extractMetaContent(
+    html,
+    /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']robots["']/i,
+  );
+  const wordCount = htmlToText(html).split(/\s+/).filter(Boolean).length;
+
+  const findings: string[] = [];
+  if (!title) findings.push("Missing <title> tag.");
+  if (title && title.length > 65) findings.push("Title tag is longer than 65 characters.");
+  if (!description) findings.push("Missing meta description.");
+  if (description && description.length > 160) findings.push("Meta description is longer than 160 characters.");
+  if (h1s.length === 0) findings.push("Missing H1 heading.");
+  if (h1s.length > 1) findings.push("Multiple H1 headings found.");
+  if (!canonical) findings.push("Missing canonical URL.");
+  if (wordCount < 150) findings.push("Page has thin visible text content.");
+
+  return {
+    url: safeUrl.toString(),
+    title,
+    description,
+    canonical,
+    robots,
+    h1s,
+    wordCount,
+    findings,
+  };
+}
+
+async function crawlSite(startUrl: string, requestedMaxPages?: number) {
+  const originUrl = parseHttpUrl(startUrl);
+  const limit = Math.min(Math.max(Number(requestedMaxPages) || 5, 1), MAX_CRAWL_PAGES);
+  const queue = [originUrl.toString()];
+  const visited = new Set<string>();
+  const pages: Array<{
+    url: string;
+    title: string;
+    description: string;
+    h1Count: number;
+    canonical: string;
+  }> = [];
+
+  while (queue.length > 0 && visited.size < limit) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    try {
+      const response = await fetch(current, {
+        headers: { "User-Agent": "BizBot-Agent/1.0" },
+      });
+      if (!response.ok) continue;
+      const html = await response.text();
+      pages.push({
+        url: current,
+        title: extractHtmlTitle(html),
+        description: extractMetaContent(html, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i)
+          || extractMetaContent(html, /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i),
+        h1Count: extractHeadings(html).length,
+        canonical: extractCanonical(html),
+      });
+
+      for (const link of extractLinks(html, new URL(current))) {
+        const parsed = new URL(link);
+        if (parsed.origin === originUrl.origin && !visited.has(parsed.toString()) && queue.length < MAX_CRAWL_PAGES) {
+          queue.push(parsed.toString());
+        }
+      }
+    } catch {
+      // Skip failed pages during crawl.
+    }
+  }
+
+  return {
+    origin: originUrl.origin,
+    crawledPages: pages.length,
+    pages,
   };
 }
 
@@ -715,6 +941,54 @@ async function resolveServerToolCall(call: ToolCall) {
     };
   }
 
+  if (call.name === "browser_screenshot") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_screenshot",
+          response: await browserScreenshot(Boolean(call.args?.fullPage)),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_list_interactives") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_list_interactives",
+          response: await browserListInteractives(),
+        },
+      },
+    };
+  }
+
+  if (call.name === "seo_audit_url") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "seo_audit_url",
+          response: await seoAuditUrl(String(call.args?.url || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "crawl_site") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "crawl_site",
+          response: await crawlSite(String(call.args?.url || ""), Number(call.args?.maxPages)),
+        },
+      },
+    };
+  }
+
   return { handled: false as const };
 }
 
@@ -896,7 +1170,7 @@ async function startServer() {
       const initialFunctionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
 
       if (initialFunctionCalls && initialFunctionCalls.length > 0) {
-        const serverToolResponses: Array<{ functionResponse: { name: string; response: { content: string } } }> = [];
+        const serverToolResponses: Array<{ functionResponse: { name: string; response: unknown } }> = [];
         const clientToolCalls: ToolCall[] = [];
 
         for (const call of initialFunctionCalls) {
