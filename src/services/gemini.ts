@@ -297,16 +297,29 @@ export const AGENTS: Agent[] = [
   },
 ];
 
+export interface GeminiFileReference {
+  uri: string;
+  mimeType: string;
+  resourceName?: string;
+  displayName?: string;
+}
+
 export interface AttachedFile {
   name: string;
   mimeType: string;
-  data: string; // base64
-  preview?: string; // object URL for images
+  data?: string;
+  preview?: string;
+  geminiFile?: GeminiFileReference;
 }
 
 export interface ChatHistoryEntry {
   role: string;
   parts: any[];
+}
+
+export interface ChatResponse {
+  text?: string;
+  functionCalls?: any[];
 }
 
 export async function chatWithAgent(
@@ -315,7 +328,7 @@ export async function chatWithAgent(
   history: ChatHistoryEntry[] = [],
   files?: AttachedFile[],
   toolResults?: any[]
-): Promise<{ text?: string; functionCalls?: any[] }> {
+): Promise<any> {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: {
@@ -326,7 +339,11 @@ export async function chatWithAgent(
       history,
       systemInstruction: agent.systemInstruction,
       agentId: agent.id,
-      files: files?.map(f => ({ mimeType: f.mimeType, data: f.data })),
+      files: files?.map((file) => ({
+        mimeType: file.mimeType,
+        data: file.data,
+        geminiFile: file.geminiFile,
+      })),
       toolResults,
     }),
   });
