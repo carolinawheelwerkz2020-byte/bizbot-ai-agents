@@ -35,6 +35,11 @@ type UploadedFile = {
   mimetype: string;
 };
 
+const MAX_MESSAGE_LENGTH = 262_144;
+const MAX_FILES = 8;
+const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+const ALLOWED_MIME_PREFIXES = ["image/", "video/", "application/pdf", "text/", "application/json"];
 const AUTH_DISABLED = process.env.AUTH_DISABLED === "true";
 const RELAY_ALLOWED_COMMANDS = new Set([
   "npm",
@@ -139,6 +144,61 @@ function validateRelayCommand(command: string) {
   };
 }
 
+function isAllowedMimeType(mimeType?: string) {
+  if (!mimeType) return false;
+  return ALLOWED_MIME_PREFIXES.some((prefix) => mimeType.startsWith(prefix) || mimeType === prefix);
+}
+
+function estimateBase64Bytes(data: string) {
+  return Math.ceil((data.length * 3) / 4);
+}
+
+function validateChatBody(body: {
+  message?: unknown;
+  files?: RequestFile[];
+  history?: RequestHistoryEntry[];
+  toolResults?: unknown[];
+}) {
+  if (body.message != null && String(body.message).length > MAX_MESSAGE_LENGTH) {
+    return "Message too long.";
+  }
+
+  if (Array.isArray(body.history) && body.history.length > 200) {
+    return "History is too long.";
+  }
+
+  if (Array.isArray(body.toolResults) && body.toolResults.length > 50) {
+    return "Too many tool results were provided.";
+  }
+
+  if (Array.isArray(body.files)) {
+    if (body.files.length > MAX_FILES) {
+      return "Too many files.";
+    }
+
+    let totalInlineBytes = 0;
+
+    for (const file of body.files) {
+      if (!file || typeof file !== "object") continue;
+      const mimeType = file.geminiFile?.mimeType || file.mimeType;
+
+      if (mimeType && !isAllowedMimeType(mimeType)) {
+        return "File type not allowed.";
+      }
+
+      if (file.data) {
+        totalInlineBytes += estimateBase64Bytes(file.data);
+      }
+    }
+
+    if (totalInlineBytes > MAX_TOTAL_INLINE_BYTES) {
+      return "Total inline attachment size too large. Use uploaded files for large attachments.";
+    }
+  }
+
+  return null;
+}
+
 function normalizeRole(role?: string): "user" | "model" | "function" {
   if (role === "model" || role === "function") return role;
   return "user";
@@ -195,7 +255,7 @@ async function startServer() {
   console.log("Starting Aegis Command Center (Node API)...");
   const app = express();
   const PORT = 3000;
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_MAX_BYTES } });
 
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
@@ -285,6 +345,11 @@ async function startServer() {
         toolResults?: unknown[];
       };
 
+      const validationError = validateChatBody({ message, history, files, toolResults });
+      if (validationError) {
+        return res.status(400).json({ error: validationError });
+      }
+
       const { genAI } = createGeminiClients();
       const model = genAI.getGenerativeModel({
         model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
@@ -327,6 +392,10 @@ async function startServer() {
 
     if (!uploadedBinary) {
       return res.status(400).json({ error: "No file uploaded." });
+    }
+
+    if (!isAllowedMimeType(uploadedBinary.mimetype)) {
+      return res.status(400).json({ error: "File type not allowed." });
     }
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bizbot-upload-"));
