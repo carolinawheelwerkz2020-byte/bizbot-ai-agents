@@ -41,6 +41,26 @@ type ToolCall = {
   args?: Record<string, unknown>;
 };
 
+type RegisteredTool = {
+  id: string;
+  description: string;
+  command: string;
+  cwd?: string;
+  createdAt: string;
+};
+
+type HealingRecipeStep = {
+  type: "command" | "tool";
+  value: string;
+};
+
+type HealingRecipe = {
+  id: string;
+  description: string;
+  steps: HealingRecipeStep[];
+  createdAt: string;
+};
+
 const MAX_MESSAGE_LENGTH = 262_144;
 const MAX_FILES = 8;
 const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
@@ -60,8 +80,11 @@ const RELAY_ALLOWED_ROOTS = [
   path.resolve(process.env.RELAY_ROOT || process.cwd()),
 ];
 const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
+const TOOL_REGISTRY_PATH = path.join(process.cwd(), ".bizbot-tools.json");
+const HEALING_RECIPES_PATH = path.join(process.cwd(), ".bizbot-healing-recipes.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
+const MAX_HEALING_STEPS = 12;
 const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
 const BROWSER_ARTIFACTS_DIR = path.join(process.cwd(), ".browser-artifacts");
 
@@ -211,6 +234,335 @@ function validateChatBody(body: {
   }
 
   return null;
+}
+
+function readJsonArrayFile<T>(filePath: string) {
+  if (!fs.existsSync(filePath)) {
+    return [] as T[];
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [] as T[];
+  }
+}
+
+function writeJsonArrayFile<T>(filePath: string, data: T[]) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+}
+
+function normalizeRegistryId(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function validatePackageName(packageName: string) {
+  if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+(?:@[a-z0-9._-]+)?$/i.test(packageName.trim())) {
+    throw new Error("Package name must be a valid npm package identifier.");
+  }
+  return packageName.trim();
+}
+
+function readRegisteredTools() {
+  return readJsonArrayFile<RegisteredTool>(TOOL_REGISTRY_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.command === "string",
+  );
+}
+
+function writeRegisteredTools(tools: RegisteredTool[]) {
+  writeJsonArrayFile(TOOL_REGISTRY_PATH, tools);
+}
+
+function readHealingRecipes() {
+  return readJsonArrayFile<HealingRecipe>(HEALING_RECIPES_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && Array.isArray(entry.steps),
+  );
+}
+
+function writeHealingRecipes(recipes: HealingRecipe[]) {
+  writeJsonArrayFile(HEALING_RECIPES_PATH, recipes);
+}
+
+function validateHealingSteps(input: unknown) {
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new Error("Healing recipes need at least one step.");
+  }
+
+  if (input.length > MAX_HEALING_STEPS) {
+    throw new Error(`Healing recipes are limited to ${MAX_HEALING_STEPS} steps.`);
+  }
+
+  return input.map((step) => {
+    if (!step || typeof step !== "object") {
+      throw new Error("Each healing step must be an object.");
+    }
+
+    const candidate = step as Record<string, unknown>;
+    const type = candidate.type;
+    const value = candidate.value;
+    if ((type !== "command" && type !== "tool") || typeof value !== "string" || !value.trim()) {
+      throw new Error("Healing steps must use { type: 'command' | 'tool', value: '...' }.");
+    }
+
+    return {
+      type,
+      value: value.trim(),
+    } as HealingRecipeStep;
+  });
+}
+
+async function runCommandInWorkspace(command: string, cwd?: string) {
+  const { executable, args } = validateRelayCommand(command);
+  const resolvedCwd = resolveRelayPath(cwd && cwd.trim() ? cwd : process.cwd());
+
+  return new Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    signal: string | null;
+  }>((resolve, reject) => {
+    execFile(executable, args, { cwd: resolvedCwd, timeout: 120_000 }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== "number") {
+        reject(error);
+        return;
+      }
+
+      resolve({
+        stdout: stdout || "",
+        stderr: stderr || "",
+        exitCode: typeof error?.code === "number" ? error.code : 0,
+        signal: error?.signal || null,
+      });
+    });
+  });
+}
+
+async function registerTool(input: {
+  id: string;
+  description: string;
+  command: string;
+  cwd?: string;
+}) {
+  const id = normalizeRegistryId(input.id);
+  if (!id) {
+    throw new Error("Tool id must contain letters, numbers, dashes, or underscores.");
+  }
+
+  const description = input.description.trim();
+  if (!description) {
+    throw new Error("Tool description is required.");
+  }
+
+  const command = input.command.trim();
+  if (!command) {
+    throw new Error("Tool command is required.");
+  }
+
+  validateRelayCommand(command);
+  const cwd = input.cwd?.trim() ? resolveRelayPath(input.cwd.trim()) : undefined;
+
+  const tools = readRegisteredTools();
+  const existingIndex = tools.findIndex((tool) => tool.id === id);
+  const entry: RegisteredTool = {
+    id,
+    description,
+    command,
+    cwd,
+    createdAt: existingIndex >= 0 ? tools[existingIndex].createdAt : new Date().toISOString(),
+  };
+
+  if (existingIndex >= 0) {
+    tools[existingIndex] = entry;
+  } else {
+    tools.push(entry);
+  }
+
+  writeRegisteredTools(tools);
+  return entry;
+}
+
+async function runRegisteredTool(id: string) {
+  const normalizedId = normalizeRegistryId(id);
+  const tool = readRegisteredTools().find((entry) => entry.id === normalizedId);
+  if (!tool) {
+    throw new Error(`No registered tool found for "${id}".`);
+  }
+
+  const result = await runCommandInWorkspace(tool.command, tool.cwd);
+  return {
+    id: tool.id,
+    description: tool.description,
+    command: tool.command,
+    cwd: tool.cwd || process.cwd(),
+    ...result,
+  };
+}
+
+async function installNpmPackage(packageName: string, saveDev?: boolean) {
+  const validatedName = validatePackageName(packageName);
+  const args = ["install"];
+  if (saveDev) {
+    args.push("--save-dev");
+  }
+  args.push(validatedName);
+
+  const result = await runCommandInWorkspace(`npm ${args.join(" ")}`, process.cwd());
+  return {
+    packageName: validatedName,
+    saveDev: Boolean(saveDev),
+    ...result,
+  };
+}
+
+async function saveHealingRecipe(input: {
+  id: string;
+  description: string;
+  stepsJson: string;
+}) {
+  const id = normalizeRegistryId(input.id);
+  if (!id) {
+    throw new Error("Recipe id must contain letters, numbers, dashes, or underscores.");
+  }
+
+  const description = input.description.trim();
+  if (!description) {
+    throw new Error("Recipe description is required.");
+  }
+
+  let parsedSteps: unknown;
+  try {
+    parsedSteps = JSON.parse(input.stepsJson);
+  } catch {
+    throw new Error("stepsJson must be valid JSON.");
+  }
+
+  const steps = validateHealingSteps(parsedSteps);
+  for (const step of steps) {
+    if (step.type === "command") {
+      validateRelayCommand(step.value);
+    } else {
+      const toolExists = readRegisteredTools().some((tool) => tool.id === normalizeRegistryId(step.value));
+      if (!toolExists) {
+        throw new Error(`Healing recipe references missing tool "${step.value}".`);
+      }
+    }
+  }
+
+  const recipes = readHealingRecipes();
+  const existingIndex = recipes.findIndex((recipe) => recipe.id === id);
+  const entry: HealingRecipe = {
+    id,
+    description,
+    steps,
+    createdAt: existingIndex >= 0 ? recipes[existingIndex].createdAt : new Date().toISOString(),
+  };
+
+  if (existingIndex >= 0) {
+    recipes[existingIndex] = entry;
+  } else {
+    recipes.push(entry);
+  }
+
+  writeHealingRecipes(recipes);
+  return entry;
+}
+
+async function runHealingRecipe(id: string) {
+  const normalizedId = normalizeRegistryId(id);
+  const recipe = readHealingRecipes().find((entry) => entry.id === normalizedId);
+  if (!recipe) {
+    throw new Error(`No healing recipe found for "${id}".`);
+  }
+
+  const steps = [] as Array<Record<string, unknown>>;
+  let success = true;
+
+  for (const [index, step] of recipe.steps.entries()) {
+    try {
+      const result = step.type === "command"
+        ? await runCommandInWorkspace(step.value, process.cwd())
+        : await runRegisteredTool(step.value);
+
+      steps.push({
+        index,
+        type: step.type,
+        value: step.value,
+        success: result.exitCode === 0,
+        ...result,
+      });
+
+      if (result.exitCode !== 0) {
+        success = false;
+        break;
+      }
+    } catch (error) {
+      success = false;
+      steps.push({
+        index,
+        type: step.type,
+        value: step.value,
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown healing recipe error.",
+      });
+      break;
+    }
+  }
+
+  return {
+    id: recipe.id,
+    description: recipe.description,
+    success,
+    steps,
+  };
+}
+
+async function selfHealProject() {
+  const steps = [] as Array<Record<string, unknown>>;
+  const projectRoot = process.cwd();
+  const nodeModulesPath = path.join(projectRoot, "node_modules");
+
+  if (!fs.existsSync(nodeModulesPath)) {
+    const installResult = await runCommandInWorkspace("npm install", projectRoot);
+    steps.push({
+      name: "npm install",
+      ...installResult,
+      success: installResult.exitCode === 0,
+    });
+    if (installResult.exitCode !== 0) {
+      return { success: false, steps };
+    }
+  } else {
+    steps.push({
+      name: "npm install",
+      skipped: true,
+      reason: "node_modules already present",
+      success: true,
+    });
+  }
+
+  const lintResult = await runCommandInWorkspace("npm run lint", projectRoot);
+  steps.push({
+    name: "npm run lint",
+    ...lintResult,
+    success: lintResult.exitCode === 0,
+  });
+  if (lintResult.exitCode !== 0) {
+    return { success: false, steps };
+  }
+
+  const buildResult = await runCommandInWorkspace("npm run build", projectRoot);
+  steps.push({
+    name: "npm run build",
+    ...buildResult,
+    success: buildResult.exitCode === 0,
+  });
+
+  return {
+    success: buildResult.exitCode === 0,
+    steps,
+  };
 }
 
 function getModelTools(): any[] {
@@ -423,6 +775,91 @@ function getModelTools(): any[] {
               maxPages: { type: "number", description: "Maximum number of pages to crawl, capped by the server." },
             },
             required: ["url"],
+          },
+        },
+        {
+          name: "list_registered_tools",
+          description: "List custom tools that agents have registered for reuse.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
+          name: "register_tool",
+          description: "Register a reusable workspace tool backed by an allowed command.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Unique tool id using letters, numbers, dashes, or underscores." },
+              description: { type: "string", description: "Short explanation of what the tool does." },
+              command: { type: "string", description: "Allowed workspace command to run for this tool." },
+              cwd: { type: "string", description: "Optional working directory inside the workspace." },
+            },
+            required: ["id", "description", "command"],
+          },
+        },
+        {
+          name: "run_registered_tool",
+          description: "Run a tool previously added to the local registry.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Registered tool id." },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "install_npm_package",
+          description: "Install an npm package into the current workspace for new capabilities.",
+          parameters: {
+            type: "object",
+            properties: {
+              packageName: { type: "string", description: "npm package name, optionally pinned to an exact version." },
+              saveDev: { type: "boolean", description: "Install as a dev dependency instead of a runtime dependency." },
+            },
+            required: ["packageName"],
+          },
+        },
+        {
+          name: "list_healing_recipes",
+          description: "List saved self-healing recipes available to the agents.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
+          name: "save_healing_recipe",
+          description: "Save a named self-healing recipe made of commands or registered tools.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Recipe id using letters, numbers, dashes, or underscores." },
+              description: { type: "string", description: "What the recipe is for." },
+              stepsJson: { type: "string", description: "JSON array of steps like [{\"type\":\"command\",\"value\":\"npm run lint\"}]." },
+            },
+            required: ["id", "description", "stepsJson"],
+          },
+        },
+        {
+          name: "run_healing_recipe",
+          description: "Run a saved healing recipe step by step.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Saved healing recipe id." },
+            },
+            required: ["id"],
+          },
+        },
+        {
+          name: "self_heal_project",
+          description: "Run a built-in recovery routine that checks install, lint, and build health.",
+          parameters: {
+            type: "object",
+            properties: {},
           },
         },
       ],
@@ -984,6 +1421,130 @@ async function resolveServerToolCall(call: ToolCall) {
         functionResponse: {
           name: "crawl_site",
           response: await crawlSite(String(call.args?.url || ""), Number(call.args?.maxPages)),
+        },
+      },
+    };
+  }
+
+  if (call.name === "list_registered_tools") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "list_registered_tools",
+          response: {
+            tools: readRegisteredTools().map((tool) => ({
+              id: tool.id,
+              description: tool.description,
+              command: tool.command,
+              cwd: tool.cwd || process.cwd(),
+              createdAt: tool.createdAt,
+            })),
+          },
+        },
+      },
+    };
+  }
+
+  if (call.name === "register_tool") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "register_tool",
+          response: await registerTool({
+            id: String(call.args?.id || ""),
+            description: String(call.args?.description || ""),
+            command: String(call.args?.command || ""),
+            cwd: typeof call.args?.cwd === "string" ? call.args.cwd : undefined,
+          }),
+        },
+      },
+    };
+  }
+
+  if (call.name === "run_registered_tool") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "run_registered_tool",
+          response: await runRegisteredTool(String(call.args?.id || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "install_npm_package") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "install_npm_package",
+          response: await installNpmPackage(
+            String(call.args?.packageName || ""),
+            Boolean(call.args?.saveDev),
+          ),
+        },
+      },
+    };
+  }
+
+  if (call.name === "list_healing_recipes") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "list_healing_recipes",
+          response: {
+            recipes: readHealingRecipes().map((recipe) => ({
+              id: recipe.id,
+              description: recipe.description,
+              stepCount: recipe.steps.length,
+              steps: recipe.steps,
+              createdAt: recipe.createdAt,
+            })),
+          },
+        },
+      },
+    };
+  }
+
+  if (call.name === "save_healing_recipe") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "save_healing_recipe",
+          response: await saveHealingRecipe({
+            id: String(call.args?.id || ""),
+            description: String(call.args?.description || ""),
+            stepsJson: String(call.args?.stepsJson || "[]"),
+          }),
+        },
+      },
+    };
+  }
+
+  if (call.name === "run_healing_recipe") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "run_healing_recipe",
+          response: await runHealingRecipe(String(call.args?.id || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "self_heal_project") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "self_heal_project",
+          response: await selfHealProject(),
         },
       },
     };
