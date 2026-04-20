@@ -23,7 +23,10 @@ type RequestHistoryEntry = {
 
 type AuthenticatedRequest = express.Request & {
   userEmail?: string;
+  userRole?: UserRole;
 };
+
+type UserRole = "operator" | "approver" | "admin";
 
 type RequestFile = {
   mimeType: string;
@@ -81,6 +84,8 @@ type PendingApproval = {
   createdAt: string;
   reviewedAt?: string;
   reviewedBy?: string;
+  requestedBy?: string;
+  requestedByRole?: UserRole;
   result?: unknown;
 };
 
@@ -138,6 +143,20 @@ const MAX_HEALING_STEPS = 12;
 const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
 const BROWSER_ARTIFACTS_DIR = path.join(process.cwd(), ".browser-artifacts");
 
+const ROLE_RANK: Record<UserRole, number> = {
+  operator: 1,
+  approver: 2,
+  admin: 3,
+};
+
+const APPROVAL_POLICY: Record<ApprovalActionType, { requestRole: UserRole; approveRole: UserRole }> = {
+  register_tool: { requestRole: "operator", approveRole: "approver" },
+  install_npm_package: { requestRole: "approver", approveRole: "admin" },
+  save_healing_recipe: { requestRole: "operator", approveRole: "approver" },
+  run_healing_recipe: { requestRole: "operator", approveRole: "approver" },
+  self_heal_project: { requestRole: "approver", approveRole: "admin" },
+};
+
 let browserSession: Browser | null = null;
 let browserPageSession: Page | null = null;
 
@@ -153,6 +172,32 @@ function getAllowedEmails() {
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function getEmailsFromEnv(name: string) {
+  return (process.env[name] || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getUserRole(email?: string): UserRole {
+  if (!email) return "operator";
+  if (getEmailsFromEnv("ADMIN_EMAILS").includes(email)) return "admin";
+  if (getEmailsFromEnv("APPROVER_EMAILS").includes(email)) return "approver";
+  return "operator";
+}
+
+function hasRequiredRole(role: UserRole | undefined, requiredRole: UserRole) {
+  return ROLE_RANK[role || "operator"] >= ROLE_RANK[requiredRole];
+}
+
+function enforceActionRole(role: UserRole | undefined, actionType: ApprovalActionType, phase: "request" | "approve") {
+  const policy = APPROVAL_POLICY[actionType];
+  const requiredRole = phase === "request" ? policy.requestRole : policy.approveRole;
+  if (!hasRequiredRole(role, requiredRole)) {
+    throw new Error(`This action requires ${requiredRole} privileges to ${phase}.`);
+  }
 }
 
 function getBearerToken(header?: string) {
@@ -185,6 +230,7 @@ async function requireAuth(
     }
 
     req.userEmail = email || undefined;
+    req.userRole = getUserRole(email || undefined);
     return next();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown auth error.";
@@ -366,7 +412,13 @@ function writeRunTemplates(entries: StoredRunTemplate[]) {
   writeJsonArrayFile(RUN_TEMPLATES_PATH, entries);
 }
 
-function createApprovalRequest(type: ApprovalActionType, payload: Record<string, unknown>, reason?: string) {
+function createApprovalRequest(
+  type: ApprovalActionType,
+  payload: Record<string, unknown>,
+  reason?: string,
+  requestedBy?: string,
+  requestedByRole?: UserRole,
+) {
   const approvals = readApprovals();
   const approval: PendingApproval = {
     id: `approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -375,6 +427,8 @@ function createApprovalRequest(type: ApprovalActionType, payload: Record<string,
     reason,
     status: "pending",
     createdAt: new Date().toISOString(),
+    requestedBy,
+    requestedByRole,
   };
   approvals.unshift(approval);
   writeApprovals(approvals);
@@ -1353,6 +1407,7 @@ function getAutonomyOverview() {
     registeredTools: readRegisteredTools(),
     healingRecipes: readHealingRecipes(),
     approvals: readApprovals(),
+    approvalPolicy: APPROVAL_POLICY,
     relay: {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
       allowedRoots: RELAY_ALLOWED_ROOTS,
@@ -1409,7 +1464,10 @@ function isPendingApproval(value: unknown): value is PendingApproval {
   );
 }
 
-async function resolveServerToolCall(call: ToolCall) {
+async function resolveServerToolCall(
+  call: ToolCall,
+  requester?: { email?: string; role?: UserRole },
+) {
   if (call.name === "get_neural_memory") {
     return {
       handled: true,
@@ -1605,7 +1663,7 @@ async function resolveServerToolCall(call: ToolCall) {
       description: String(call.args?.description || ""),
       command: String(call.args?.command || ""),
       cwd: typeof call.args?.cwd === "string" ? call.args.cwd : undefined,
-    }, "Agent requested tool registration.");
+    }, "Agent requested tool registration.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -1634,7 +1692,7 @@ async function resolveServerToolCall(call: ToolCall) {
     const approval = createApprovalRequest("install_npm_package", {
       packageName: String(call.args?.packageName || ""),
       saveDev: Boolean(call.args?.saveDev),
-    }, "Agent requested package install.");
+    }, "Agent requested package install.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -1672,7 +1730,7 @@ async function resolveServerToolCall(call: ToolCall) {
       id: String(call.args?.id || ""),
       description: String(call.args?.description || ""),
       stepsJson: String(call.args?.stepsJson || "[]"),
-    }, "Agent requested healing recipe save.");
+    }, "Agent requested healing recipe save.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -1688,7 +1746,7 @@ async function resolveServerToolCall(call: ToolCall) {
   if (call.name === "run_healing_recipe") {
     const approval = createApprovalRequest("run_healing_recipe", {
       id: String(call.args?.id || ""),
-    }, "Agent requested healing recipe execution.");
+    }, "Agent requested healing recipe execution.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -1702,7 +1760,7 @@ async function resolveServerToolCall(call: ToolCall) {
   }
 
   if (call.name === "self_heal_project") {
-    const approval = createApprovalRequest("self_heal_project", {}, "Agent requested project self-heal.");
+    const approval = createApprovalRequest("self_heal_project", {}, "Agent requested project self-heal.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -1848,9 +1906,12 @@ async function startServer() {
     }
   });
 
-  app.get("/api/autonomy/overview", (_req, res) => {
+  app.get("/api/autonomy/overview", (req: AuthenticatedRequest, res) => {
     try {
-      res.json(getAutonomyOverview());
+      res.json({
+        ...getAutonomyOverview(),
+        currentUserRole: req.userRole || "operator",
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown autonomy overview error.";
       res.status(500).json({ error: message });
@@ -1929,18 +1990,19 @@ async function startServer() {
     }
   });
 
-  app.post("/api/autonomy/tools", async (req, res) => {
+  app.post("/api/autonomy/tools", async (req: AuthenticatedRequest, res) => {
     try {
+      enforceActionRole(req.userRole, "register_tool", "request");
       const approval = createApprovalRequest("register_tool", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         command: String(req.body?.command || ""),
         cwd: typeof req.body?.cwd === "string" ? req.body.cwd : undefined,
-      }, "Operator requested tool registration.");
+      }, "Operator requested tool registration.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown tool registration error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
@@ -1954,52 +2016,56 @@ async function startServer() {
     }
   });
 
-  app.post("/api/autonomy/install-package", async (req, res) => {
+  app.post("/api/autonomy/install-package", async (req: AuthenticatedRequest, res) => {
     try {
+      enforceActionRole(req.userRole, "install_npm_package", "request");
       const approval = createApprovalRequest("install_npm_package", {
         packageName: String(req.body?.packageName || ""),
         saveDev: Boolean(req.body?.saveDev),
-      }, "Operator requested package install.");
+      }, "Operator requested package install.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown npm install error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
-  app.post("/api/autonomy/healing-recipes", async (req, res) => {
+  app.post("/api/autonomy/healing-recipes", async (req: AuthenticatedRequest, res) => {
     try {
+      enforceActionRole(req.userRole, "save_healing_recipe", "request");
       const approval = createApprovalRequest("save_healing_recipe", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         stepsJson: String(req.body?.stepsJson || "[]"),
-      }, "Operator requested healing recipe save.");
+      }, "Operator requested healing recipe save.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown healing recipe save error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
-  app.post("/api/autonomy/healing-recipes/run", async (req, res) => {
+  app.post("/api/autonomy/healing-recipes/run", async (req: AuthenticatedRequest, res) => {
     try {
+      enforceActionRole(req.userRole, "run_healing_recipe", "request");
       const approval = createApprovalRequest("run_healing_recipe", {
         id: String(req.body?.id || ""),
-      }, "Operator requested healing recipe execution.");
+      }, "Operator requested healing recipe execution.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown healing recipe execution error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
-  app.post("/api/autonomy/self-heal", async (_req, res) => {
+  app.post("/api/autonomy/self-heal", async (req: AuthenticatedRequest, res) => {
     try {
-      const approval = createApprovalRequest("self_heal_project", {}, "Operator requested project self-heal.");
+      enforceActionRole(req.userRole, "self_heal_project", "request");
+      const approval = createApprovalRequest("self_heal_project", {}, "Operator requested project self-heal.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown self-heal error.";
-      res.status(500).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 500).json({ error: message });
     }
   });
 
@@ -2014,6 +2080,15 @@ async function startServer() {
       if (approval.status !== "pending") {
         return res.status(400).json({ error: `Approval is already ${approval.status}.` });
       }
+      enforceActionRole(req.userRole, approval.type, "approve");
+      if (
+        approval.requestedBy
+        && req.userEmail
+        && approval.requestedBy === req.userEmail
+        && (approval.type === "install_npm_package" || approval.type === "self_heal_project")
+      ) {
+        return res.status(403).json({ error: "A different approver is required for this action." });
+      }
 
       const result = await executeApprovalAction(approval);
       approvals[targetIndex] = {
@@ -2027,7 +2102,7 @@ async function startServer() {
       res.json(approvals[targetIndex]);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown approval execution error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
@@ -2042,6 +2117,7 @@ async function startServer() {
       if (approval.status !== "pending") {
         return res.status(400).json({ error: `Approval is already ${approval.status}.` });
       }
+      enforceActionRole(req.userRole, approval.type, "approve");
 
       approvals[targetIndex] = {
         ...approval,
@@ -2056,11 +2132,11 @@ async function startServer() {
       res.json(approvals[targetIndex]);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown approval rejection error.";
-      res.status(400).json({ error: message });
+      res.status(message.includes("requires") ? 403 : 400).json({ error: message });
     }
   });
 
-  app.post("/api/chat", async (req, res) => {
+  app.post("/api/chat", async (req: AuthenticatedRequest, res) => {
     try {
       const {
         message = "",
@@ -2113,7 +2189,10 @@ async function startServer() {
         const clientToolCalls: ToolCall[] = [];
 
         for (const call of initialFunctionCalls) {
-          const resolution = await resolveServerToolCall(call);
+          const resolution = await resolveServerToolCall(call, {
+            email: req.userEmail,
+            role: req.userRole,
+          });
           if (resolution.handled) {
             serverToolResponses.push(resolution.response);
             if (isPendingApproval(resolution.approval)) {

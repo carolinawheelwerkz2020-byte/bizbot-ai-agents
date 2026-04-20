@@ -16,7 +16,7 @@ import {
   Wrench,
   Video,
 } from 'lucide-react';
-import { AutonomyService, type AutonomyOverview, type PendingApproval } from '../../services/autonomy';
+import { AutonomyService, type ApprovalActionType, type AutonomyOverview, type PendingApproval, type UserRole } from '../../services/autonomy';
 import { Badge, Button, Card, cn } from './ui';
 
 type ToolboxViewProps = {
@@ -42,6 +42,14 @@ const initialOverview: AutonomyOverview = {
   registeredTools: [],
   healingRecipes: [],
   approvals: [],
+  approvalPolicy: {
+    register_tool: { requestRole: 'operator', approveRole: 'approver' },
+    install_npm_package: { requestRole: 'approver', approveRole: 'admin' },
+    save_healing_recipe: { requestRole: 'operator', approveRole: 'approver' },
+    run_healing_recipe: { requestRole: 'operator', approveRole: 'approver' },
+    self_heal_project: { requestRole: 'approver', approveRole: 'admin' },
+  },
+  currentUserRole: 'operator',
   relay: {
     allowedCommands: [],
     allowedRoots: [],
@@ -52,6 +60,24 @@ const initialOverview: AutonomyOverview = {
     maxCrawlPages: 0,
   },
 };
+
+function formatRoleLabel(role: UserRole) {
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function formatActionLabel(action: ApprovalActionType) {
+  return action.split('_').join(' ');
+}
+
+const roleRank: Record<UserRole, number> = {
+  operator: 1,
+  approver: 2,
+  admin: 3,
+};
+
+function hasRole(currentRole: UserRole, requiredRole: UserRole) {
+  return roleRank[currentRole] >= roleRank[requiredRole];
+}
 
 function formatCommandResult(result: Record<string, unknown>) {
   const sections: string[] = [];
@@ -131,6 +157,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       .sort((a, b) => new Date(b.reviewedAt || b.createdAt).getTime() - new Date(a.reviewedAt || a.createdAt).getTime())
       .slice(0, 8),
     [overview.approvals]
+  );
+  const approvalPolicyEntries = useMemo(
+    () => (Object.entries(overview.approvalPolicy) as Array<[ApprovalActionType, { requestRole: UserRole; approveRole: UserRole }]>),
+    [overview.approvalPolicy]
   );
 
   const refreshOverview = async (silent = false) => {
@@ -390,6 +420,41 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
           </Card>
         </div>
 
+        <Card className="p-6 lg:p-8 space-y-6 border-white/10 bg-white/[0.02]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight">Approval Policy</h3>
+              <p className="text-sm text-zinc-500 mt-2">Role-based request and approval gates keep high-impact autonomy changes from executing without the right operator in the loop.</p>
+            </div>
+            <Badge color="blue">Current Role: {formatRoleLabel(overview.currentUserRole)}</Badge>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {approvalPolicyEntries.map(([action, policy]) => (
+              <Card key={action} className="p-5 border-white/10 bg-black/20">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Badge color="gold">{formatActionLabel(action)}</Badge>
+                    <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">
+                      {hasRole(overview.currentUserRole, policy.approveRole)
+                        ? 'Can approve'
+                        : hasRole(overview.currentUserRole, policy.requestRole)
+                          ? 'Can request'
+                          : 'View only'}
+                    </span>
+                  </div>
+                  <div className="text-sm text-zinc-300">
+                    Requester role: <span className="font-semibold text-white">{formatRoleLabel(policy.requestRole)}</span>
+                  </div>
+                  <div className="text-sm text-zinc-300">
+                    Approver role: <span className="font-semibold text-white">{formatRoleLabel(policy.approveRole)}</span>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </Card>
+
         {actionState && (
           <Card className={cn(
             'p-5 border',
@@ -436,8 +501,18 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                       <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
                         {new Date(approval.createdAt).toLocaleString()}
                       </span>
+                      {approval.requestedByRole && (
+                        <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+                          Requested by {formatRoleLabel(approval.requestedByRole)}
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm text-zinc-400">{approval.reason || 'Awaiting operator review.'}</p>
+                    {approval.requestedBy && (
+                      <div className="text-sm text-zinc-300">
+                        Requested by: <span className="font-semibold text-white">{approval.requestedBy}</span>
+                      </div>
+                    )}
                     <pre className="whitespace-pre-wrap break-words text-xs text-zinc-300 font-mono rounded-2xl bg-black/20 border border-white/5 px-4 py-3">
                       {formatApprovalPayload(approval.payload)}
                     </pre>
@@ -484,6 +559,12 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                   <div className="text-sm text-zinc-300">
                     Reviewer: <span className="text-white font-semibold">{approval.reviewedBy || 'Unknown reviewer'}</span>
                   </div>
+                  {(approval.requestedBy || approval.requestedByRole) && (
+                    <div className="text-sm text-zinc-300">
+                      Requested by: <span className="text-white font-semibold">{approval.requestedBy || 'Unknown requester'}</span>
+                      {approval.requestedByRole ? ` (${formatRoleLabel(approval.requestedByRole)})` : ''}
+                    </div>
+                  )}
                   {approval.reason && (
                     <p className="text-sm text-zinc-400">{approval.reason}</p>
                   )}

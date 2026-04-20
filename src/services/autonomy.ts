@@ -39,6 +39,13 @@ export type ApprovalActionType =
   | 'run_healing_recipe'
   | 'self_heal_project';
 
+export type UserRole = 'operator' | 'approver' | 'admin';
+
+export type ApprovalPolicy = Record<ApprovalActionType, {
+  requestRole: UserRole;
+  approveRole: UserRole;
+}>;
+
 export type PendingApproval = {
   id: string;
   type: ApprovalActionType;
@@ -48,6 +55,8 @@ export type PendingApproval = {
   createdAt: string;
   reviewedAt?: string;
   reviewedBy?: string;
+  requestedBy?: string;
+  requestedByRole?: UserRole;
   result?: unknown;
 };
 
@@ -55,6 +64,8 @@ export type AutonomyOverview = {
   registeredTools: RegisteredTool[];
   healingRecipes: HealingRecipe[];
   approvals: PendingApproval[];
+  approvalPolicy: ApprovalPolicy;
+  currentUserRole: UserRole;
   relay: {
     allowedCommands: string[];
     allowedRoots: string[];
