@@ -1,3 +1,5 @@
+import { authHeaderObject } from '../lib/authHeaders';
+
 export interface Agent {
   id: string;
   name: string;
@@ -329,10 +331,12 @@ export async function chatWithAgent(
   files?: AttachedFile[],
   toolResults?: any[]
 ): Promise<any> {
+  const authHeaders = await authHeaderObject();
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders,
     },
     body: JSON.stringify({
       message,
@@ -368,32 +372,38 @@ export async function chatWithAgent(
  */
 export const RelayBridge = {
   async exec(command: string, workdir?: string) {
+    const authHeaders = await authHeaderObject();
     const res = await fetch("http://localhost:3000/api/relay/exec", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ command, workdir }),
     });
     return res.json();
   },
 
   async read_file(path: string) {
-    const res = await fetch(`http://localhost:3000/api/relay/read?path=${encodeURIComponent(path)}`);
+    const authHeaders = await authHeaderObject();
+    const res = await fetch(`http://localhost:3000/api/relay/read?path=${encodeURIComponent(path)}`, {
+      headers: authHeaders,
+    });
     return res.json();
   },
 
   async write_file(path: string, content: string) {
+    const authHeaders = await authHeaderObject();
     const res = await fetch("http://localhost:3000/api/relay/write", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, content }),
     });
     return res.json();
   },
 
   async edit_file(path: string, oldString: string, newString: string) {
+    const authHeaders = await authHeaderObject();
     const res = await fetch("http://localhost:3000/api/relay/edit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, oldString, newString }),
     });
     return res.json();

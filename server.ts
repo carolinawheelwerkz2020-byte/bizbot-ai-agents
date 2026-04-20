@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import os from "node:os";
 import path from "path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "url";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -33,6 +34,110 @@ type UploadedFile = {
   buffer: Buffer;
   mimetype: string;
 };
+
+const AUTH_DISABLED = process.env.AUTH_DISABLED === "true";
+const RELAY_ALLOWED_COMMANDS = new Set([
+  "npm",
+  "npx",
+  "node",
+  "git",
+  "tsx",
+  "tsc",
+  "vite",
+]);
+const RELAY_ALLOWED_ROOTS = [
+  path.resolve(process.env.RELAY_ROOT || process.cwd()),
+];
+
+function ensureFirebaseAdmin() {
+  if (admin.apps.length > 0) return;
+  admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+  });
+}
+
+function getAllowedEmails() {
+  return (process.env.ALLOWED_EMAILS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getBearerToken(header?: string) {
+  if (!header?.startsWith("Bearer ")) return null;
+  return header.slice(7);
+}
+
+async function requireAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (AUTH_DISABLED) {
+    return next();
+  }
+
+  try {
+    ensureFirebaseAdmin();
+    const token = getBearerToken(req.headers.authorization);
+    if (!token) {
+      return res.status(401).json({ error: "Sign in required." });
+    }
+
+    const decoded = await admin.auth().verifyIdToken(token);
+    const email = (decoded.email || "").toLowerCase();
+    const allowedEmails = getAllowedEmails();
+
+    if (allowedEmails.length > 0 && !allowedEmails.includes(email)) {
+      return res.status(403).json({ error: "Your account is not authorized for this app." });
+    }
+
+    return next();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown auth error.";
+    console.error("[auth]", message);
+    return res.status(401).json({ error: "Invalid or expired session. Sign in again." });
+  }
+}
+
+function isPathInsideRoot(targetPath: string, rootPath: string) {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveRelayPath(inputPath: string) {
+  const resolvedPath = path.resolve(inputPath);
+  const isAllowed = RELAY_ALLOWED_ROOTS.some((root) => isPathInsideRoot(resolvedPath, root));
+  if (!isAllowed) {
+    throw new Error("Requested path is outside the allowed relay workspace.");
+  }
+  return resolvedPath;
+}
+
+function tokenizeCommand(command: string) {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    throw new Error("No command provided.");
+  }
+
+  if (/[|&;><`]/.test(trimmed)) {
+    throw new Error("Shell operators are not allowed in relay commands.");
+  }
+
+  return trimmed.match(/"[^"]*"|'[^']*'|\S+/g)?.map((token) => token.replace(/^["']|["']$/g, "")) || [];
+}
+
+function validateRelayCommand(command: string) {
+  const parts = tokenizeCommand(command);
+  const executable = parts[0]?.toLowerCase();
+  if (!executable || !RELAY_ALLOWED_COMMANDS.has(executable)) {
+    throw new Error(`Command "${parts[0] || ""}" is not allowed by the relay policy.`);
+  }
+  return {
+    executable: parts[0],
+    args: parts.slice(1),
+  };
+}
 
 function normalizeRole(role?: string): "user" | "model" | "function" {
   if (role === "model" || role === "function") return role;
@@ -94,22 +199,29 @@ async function startServer() {
 
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
+  app.use("/api", requireAuth);
 
   // --- Relay Tool Endpoints ---
 
   /** Execute a shell command. */
   app.post("/api/relay/exec", async (req, res) => {
     const { command, workdir } = req.body;
-    if (!command) return res.status(400).json({ error: "No command provided." });
+    try {
+      const { executable, args } = validateRelayCommand(String(command || ""));
+      const cwd = resolveRelayPath(typeof workdir === "string" && workdir.trim() ? workdir : process.cwd());
 
-    const { exec } = await import("child_process");
-    exec(command, { cwd: workdir || process.cwd() }, (error, stdout, stderr) => {
-      res.json({
-        stdout: stdout || "",
-        stderr: stderr || "",
-        exitCode: error ? error.code : 0,
+      execFile(executable, args, { cwd, timeout: 60_000 }, (error, stdout, stderr) => {
+        res.json({
+          stdout: stdout || "",
+          stderr: stderr || "",
+          exitCode: typeof error?.code === "number" ? error.code : 0,
+          signal: error?.signal || null,
+        });
       });
-    });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown exec error.";
+      res.status(400).json({ error: message });
+    }
   });
 
   /** Read a file. */
@@ -117,7 +229,7 @@ async function startServer() {
     const filePath = req.query.path as string;
     if (!filePath) return res.status(400).json({ error: "No path provided." });
     try {
-      const content = fs.readFileSync(path.resolve(filePath), "utf8");
+      const content = fs.readFileSync(resolveRelayPath(filePath), "utf8");
       res.json({ content });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown read error.";
@@ -130,7 +242,7 @@ async function startServer() {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) return res.status(400).json({ error: "Missing path or content." });
     try {
-      fs.writeFileSync(path.resolve(filePath), content, "utf8");
+      fs.writeFileSync(resolveRelayPath(String(filePath)), String(content), "utf8");
       res.json({ success: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown write error.";
@@ -143,12 +255,12 @@ async function startServer() {
     const { path: filePath, oldString, newString } = req.body;
     if (!filePath || !oldString || newString === undefined) return res.status(400).json({ error: "Missing required fields." });
     try {
-      const fullPath = path.resolve(filePath);
+      const fullPath = resolveRelayPath(String(filePath));
       let content = fs.readFileSync(fullPath, "utf8");
       if (!content.includes(oldString)) {
         return res.status(400).json({ error: "oldString not found in file." });
       }
-      content = content.replace(oldString, newString);
+      content = content.replace(String(oldString), String(newString));
       fs.writeFileSync(fullPath, content, "utf8");
       res.json({ success: true });
     } catch (e) {
