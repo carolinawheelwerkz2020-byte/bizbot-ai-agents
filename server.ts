@@ -280,6 +280,19 @@ function getModelTools(): any[] {
             required: ["fact"],
           },
         },
+        {
+          name: "route_to_agent",
+          description: "Hand work off to another BizBot agent so execution can continue with the best specialist.",
+          parameters: {
+            type: "object",
+            properties: {
+              agentId: { type: "string", description: "The target BizBot agent id." },
+              prompt: { type: "string", description: "The exact prompt or task brief for the target agent." },
+              reason: { type: "string", description: "Short explanation for why the handoff is happening." },
+            },
+            required: ["agentId", "prompt"],
+          },
+        },
       ],
     },
   ];
