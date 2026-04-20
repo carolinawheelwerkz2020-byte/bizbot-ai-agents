@@ -324,6 +324,21 @@ export interface ChatResponse {
   functionCalls?: any[];
 }
 
+async function parseApiResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let errorMessage = `Error ${response.status}: ${response.statusText}`;
+    try {
+      const errorData = await response.json() as { error?: string; details?: string };
+      errorMessage = errorData.error || errorData.details || errorMessage;
+    } catch {
+      // Ignore non-JSON error responses.
+    }
+    throw new Error(errorMessage);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export async function chatWithAgent(
   agent: Agent,
   message: string,
@@ -351,19 +366,7 @@ export async function chatWithAgent(
       toolResults,
     }),
   });
-
-  if (!response.ok) {
-    let errorMessage = `Error ${response.status}: ${response.statusText}`;
-    try {
-      const errorData = await response.json();
-      errorMessage = errorData.error || errorData.details || errorMessage;
-    } catch (e) {
-      // Not a JSON response, maybe a 413 or 504 HTML page
-    }
-    throw new Error(errorMessage);
-  }
-
-  return response.json();
+  return parseApiResponse<ChatResponse>(response);
 }
 
 /** 
@@ -378,7 +381,7 @@ export const RelayBridge = {
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ command, workdir }),
     });
-    return res.json();
+    return parseApiResponse(res);
   },
 
   async read_file(path: string) {
@@ -386,7 +389,7 @@ export const RelayBridge = {
     const res = await fetch(`http://localhost:3000/api/relay/read?path=${encodeURIComponent(path)}`, {
       headers: authHeaders,
     });
-    return res.json();
+    return parseApiResponse(res);
   },
 
   async write_file(path: string, content: string) {
@@ -396,7 +399,7 @@ export const RelayBridge = {
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, content }),
     });
-    return res.json();
+    return parseApiResponse(res);
   },
 
   async edit_file(path: string, oldString: string, newString: string) {
@@ -406,6 +409,6 @@ export const RelayBridge = {
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, oldString, newString }),
     });
-    return res.json();
+    return parseApiResponse(res);
   }
 };

@@ -153,6 +153,10 @@ export function ChatView({
                   <div className="w-12 h-12 rounded-2xl bg-zinc-800 flex items-center justify-center text-zinc-500 border border-white/10 shadow-2xl">
                     <User size={24} />
                   </div>
+                ) : msg.role === 'system' ? (
+                  <div className="w-12 h-12 rounded-2xl bg-cyber-rose/10 flex items-center justify-center text-cyber-rose border border-cyber-rose/20 shadow-2xl">
+                    <AlertCircle size={24} />
+                  </div>
                 ) : (
                   <AgentAvatar agent={AGENTS.find((agent) => agent.id === msg.agentId) || selectedAgent} size="md" glow />
                 )}
@@ -164,6 +168,8 @@ export function ChatView({
                     'relative inline-block px-10 py-8 rounded-[2.5rem] text-[15px] leading-relaxed shadow-[0_20px_50px_rgba(0,0,0,0.3)]',
                     msg.role === 'user'
                       ? 'bg-gradient-to-br from-cyber-blue to-blue-800 text-white rounded-tr-none border border-white/20'
+                      : msg.role === 'system'
+                        ? 'bg-cyber-rose/10 text-rose-100 rounded-tl-none border border-cyber-rose/20'
                       : 'glass-dark rounded-tl-none text-zinc-300 border-white/5'
                   )}
                 >

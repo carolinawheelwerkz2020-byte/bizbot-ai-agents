@@ -36,6 +36,13 @@ type RelayFunctionResult = {
   };
 };
 
+type ErrorPresentation = {
+  title: string;
+  summary: string;
+  steps: string[];
+  logMessage: string;
+};
+
 const AgentsView = lazy(async () => {
   const module = await import('./components/app/AgentsView');
   return { default: module.AgentsView };
@@ -94,6 +101,156 @@ function buildHistoryFromMessages(messages: Message[]): ChatHistoryEntry[] {
   return messages
     .map(messageToHistoryParts)
     .filter((entry): entry is ChatHistoryEntry => Boolean(entry));
+}
+
+function normalizeErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Unknown communication error.';
+}
+
+function presentError(error: unknown, context: 'chat' | 'upload' | 'relay' | 'workflow'): ErrorPresentation {
+  const message = normalizeErrorMessage(error);
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes('sign in required') || normalized.includes('invalid or expired session') || normalized.includes('401')) {
+    return {
+      title: 'Session expired',
+      summary: 'Your session is no longer valid, so the request could not reach the API.',
+      steps: [
+        'Sign in again and retry the request.',
+        'If Firebase auth is enabled locally, make sure the server can verify your token.',
+      ],
+      logMessage: 'Authentication required for API request.',
+    };
+  }
+
+  if (normalized.includes('not authorized') || normalized.includes('403')) {
+    return {
+      title: 'Access blocked',
+      summary: 'Your account is signed in, but it is not on the API allowlist.',
+      steps: [
+        'Add your email to `ALLOWED_EMAILS` on the server.',
+        'Restart the local server after updating environment settings.',
+      ],
+      logMessage: 'API request blocked by allowlist policy.',
+    };
+  }
+
+  if (normalized.includes('file type not allowed')) {
+    return {
+      title: 'Unsupported file type',
+      summary: 'That attachment format is not allowed by the server upload policy.',
+      steps: [
+        'Use an image, video, PDF, text file, or JSON file.',
+        'If this type should be accepted, update the server MIME allowlist.',
+      ],
+      logMessage: 'Upload blocked by MIME policy.',
+    };
+  }
+
+  if (normalized.includes('too many files') || normalized.includes('message too long') || normalized.includes('history is too long') || normalized.includes('too many tool results')) {
+    return {
+      title: 'Request too large',
+      summary: 'The request exceeded one of the server safety limits.',
+      steps: [
+        'Reduce the number of attachments or shorten the message.',
+        'Break the task into smaller steps and retry.',
+      ],
+      logMessage: 'Request rejected by API payload guardrails.',
+    };
+  }
+
+  if (normalized.includes('total inline attachment size too large')) {
+    return {
+      title: 'Attachment payload too large',
+      summary: 'The inline attachment payload was too large for a chat request.',
+      steps: [
+        'Retry with fewer or smaller files.',
+        'Use larger uploaded files instead of inline attachments when possible.',
+      ],
+      logMessage: 'Inline attachment payload exceeded limit.',
+    };
+  }
+
+  if (normalized.includes('outside the allowed relay workspace')) {
+    return {
+      title: 'Relay path blocked',
+      summary: 'The requested file path is outside the workspace the relay is allowed to touch.',
+      steps: [
+        'Retry using a file inside the project workspace.',
+        'If this path must be reachable, expand `RELAY_ROOT` on the server.',
+      ],
+      logMessage: 'Relay blocked file access outside allowed workspace.',
+    };
+  }
+
+  if (normalized.includes('not allowed by the relay policy') || normalized.includes('shell operators are not allowed')) {
+    return {
+      title: 'Relay command blocked',
+      summary: 'The requested shell command was denied by the relay safety policy.',
+      steps: [
+        'Retry with a simpler allowed command such as `npm`, `node`, or `git`.',
+        'Avoid shell chaining, redirection, and unsupported executables.',
+      ],
+      logMessage: 'Relay blocked an unsafe command.',
+    };
+  }
+
+  if (normalized.includes('failed to fetch')) {
+    return {
+      title: 'Connection lost',
+      summary: 'The browser could not reach the local API server.',
+      steps: [
+        'Make sure the local server is running with `npm run dev` or `npm run aegis`.',
+        'Refresh the page after the server is back online.',
+      ],
+      logMessage: 'Browser could not reach the local API server.',
+    };
+  }
+
+  if (normalized.includes('timed out')) {
+    return {
+      title: 'Request timed out',
+      summary: 'The server took too long to finish the request.',
+      steps: [
+        'Retry the request once.',
+        'For large uploads or long generations, try a smaller input first.',
+      ],
+      logMessage: `${context} request timed out.`,
+    };
+  }
+
+  if (normalized.includes('missing gemini_api_key') || normalized.includes('google_api_key')) {
+    return {
+      title: 'AI API is not configured',
+      summary: 'The server is missing the Gemini API key required for this action.',
+      steps: [
+        'Set `GEMINI_API_KEY` in `.env.local` or your deployment environment.',
+        'Restart the server after updating environment variables.',
+      ],
+      logMessage: 'Gemini API key is missing on the server.',
+    };
+  }
+
+  return {
+    title: context === 'upload' ? 'Upload failed' : context === 'workflow' ? 'Workflow interrupted' : 'Request failed',
+    summary: message,
+    steps: [
+      'Retry the action once.',
+      'If the problem persists, check the local server logs for more detail.',
+    ],
+    logMessage: message,
+  };
+}
+
+function formatSystemErrorMessage(error: ErrorPresentation) {
+  return [
+    `### ${error.title}`,
+    '',
+    error.summary,
+    '',
+    '**What to do next**',
+    ...error.steps.map((step, index) => `${index + 1}. ${step}`),
+  ].join('\n');
 }
 
 function ViewLoadingFallback() {
@@ -230,12 +387,12 @@ export default function App() {
                 }
               });
             } catch (toolErr: unknown) {
-              const errorMessage = toolErr instanceof Error ? toolErr.message : 'Unknown relay error.';
-              addLog(`Relay Error: ${errorMessage}`, 'warn');
+              const relayError = presentError(toolErr, 'relay');
+              addLog(`Relay Error: ${relayError.logMessage}`, 'warn');
               toolResults.push({
                 functionResponse: {
                   name: call.name,
-                  response: { error: errorMessage }
+                  response: { error: relayError.summary }
                 }
               });
             }
@@ -277,10 +434,11 @@ export default function App() {
         }
       }
     } catch (err) {
-      addLog(`Communication Failure: ${agent.name}`, 'warn');
+      const chatError = presentError(err, 'chat');
+      addLog(`Communication Failure: ${chatError.logMessage}`, 'warn');
       const systemError: Message = { 
         role: 'system', 
-        content: `### ⚠️ SYSTEM ERROR: AI FAILED\n\n**Reason**: ${err instanceof Error ? err.message : 'Unknown communication error.'}\n\n**Troubleshooting**:\n1. Check your internet connection.\n2. Ensure the Local Relay (\`npm run aegis\`) is running.\n3. Try refreshing the page.\n4. If the error persists, use the **QA Agent** for a diagnostic check.`,
+        content: formatSystemErrorMessage(chatError),
         timestamp: new Date()
       };
       setMessages(prev => [...prev, systemError]);
@@ -411,7 +569,16 @@ export default function App() {
           timestamp: new Date() 
         }]);
       } catch (err) {
-        addLog(`Workflow failed at step ${i + 1}`, 'warn');
+        const workflowError = presentError(err, 'workflow');
+        addLog(`Workflow failed at step ${i + 1}: ${workflowError.logMessage}`, 'warn');
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: formatSystemErrorMessage({
+            ...workflowError,
+            title: `Workflow step ${i + 1} failed`,
+          }),
+          timestamp: new Date(),
+        }]);
         break;
       }
     }
@@ -435,8 +602,16 @@ export default function App() {
           }]);
           addLog(`${file.name} ready (Cloud Storage)`, 'success');
         } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown upload error.';
-          addLog(`Failed to upload ${file.name}: ${errorMessage}`, 'warn');
+          const uploadError = presentError(err, 'upload');
+          addLog(`Failed to upload ${file.name}: ${uploadError.logMessage}`, 'warn');
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: formatSystemErrorMessage({
+              ...uploadError,
+              title: `Upload failed for ${file.name}`,
+            }),
+            timestamp: new Date(),
+          }]);
         }
       } else {
         const reader = new FileReader();
@@ -449,6 +624,10 @@ export default function App() {
             preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
           }]);
           addLog(`${file.name} ready (Memory)`, 'success');
+        };
+        reader.onerror = () => {
+          const uploadError = presentError(new Error(`The browser could not read ${file.name}.`), 'upload');
+          addLog(`Failed to read ${file.name}: ${uploadError.logMessage}`, 'warn');
         };
         reader.readAsDataURL(file);
       }
