@@ -10,6 +10,7 @@ import multer from "multer";
 import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import admin from "firebase-admin";
+import { chromium, type Browser, type Page } from "playwright";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -60,6 +61,10 @@ const RELAY_ALLOWED_ROOTS = [
 ];
 const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
 const MAX_FETCHED_PAGE_CHARS = 12_000;
+const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === "true";
+
+let browserSession: Browser | null = null;
+let browserPageSession: Page | null = null;
 
 function ensureFirebaseAdmin() {
   if (admin.apps.length > 0) return;
@@ -316,6 +321,67 @@ function getModelTools(): any[] {
             required: ["url"],
           },
         },
+        {
+          name: "browser_navigate",
+          description: "Open or navigate the shared browser session to a URL.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The http or https URL to open." },
+            },
+            required: ["url"],
+          },
+        },
+        {
+          name: "browser_click",
+          description: "Click an element in the shared browser session using a CSS selector.",
+          parameters: {
+            type: "object",
+            properties: {
+              selector: { type: "string", description: "CSS selector for the element to click." },
+            },
+            required: ["selector"],
+          },
+        },
+        {
+          name: "browser_type",
+          description: "Fill or type text into an element in the shared browser session.",
+          parameters: {
+            type: "object",
+            properties: {
+              selector: { type: "string", description: "CSS selector for the input or textarea." },
+              text: { type: "string", description: "Text to enter into the element." },
+            },
+            required: ["selector", "text"],
+          },
+        },
+        {
+          name: "browser_press",
+          description: "Press a keyboard key in the shared browser session.",
+          parameters: {
+            type: "object",
+            properties: {
+              key: { type: "string", description: "Keyboard key such as Enter, Tab, ArrowDown, or Escape." },
+            },
+            required: ["key"],
+          },
+        },
+        {
+          name: "browser_read",
+          description: "Read the current page title, URL, and trimmed visible text from the shared browser session.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
+          name: "browser_close",
+          description: "Close the shared browser session.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+        },
       ],
     },
   ];
@@ -398,6 +464,76 @@ async function fetchUrlContent(url: string) {
     contentType,
     content: normalized.slice(0, MAX_FETCHED_PAGE_CHARS),
   };
+}
+
+async function ensureBrowserPage() {
+  if (!browserSession) {
+    browserSession = await chromium.launch({
+      headless: PLAYWRIGHT_HEADLESS,
+    });
+  }
+
+  if (!browserPageSession || browserPageSession.isClosed()) {
+    const context = await browserSession.newContext({
+      viewport: { width: 1440, height: 900 },
+    });
+    browserPageSession = await context.newPage();
+  }
+
+  return browserPageSession;
+}
+
+async function browserReadState() {
+  const page = await ensureBrowserPage();
+  const title = await page.title().catch(() => "");
+  const url = page.url();
+  const textContent = await page.locator("body").innerText().catch(() => "");
+  return {
+    title,
+    url,
+    content: textContent.replace(/\s+/g, " ").trim().slice(0, MAX_FETCHED_PAGE_CHARS),
+  };
+}
+
+async function browserNavigate(url: string) {
+  const page = await ensureBrowserPage();
+  const safeUrl = parseHttpUrl(url).toString();
+  await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  return browserReadState();
+}
+
+async function browserClick(selector: string) {
+  const page = await ensureBrowserPage();
+  await page.locator(selector).first().click({ timeout: 15_000 });
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  return browserReadState();
+}
+
+async function browserType(selector: string, text: string) {
+  const page = await ensureBrowserPage();
+  const locator = page.locator(selector).first();
+  await locator.click({ timeout: 15_000 });
+  await locator.fill(text, { timeout: 15_000 });
+  return browserReadState();
+}
+
+async function browserPress(key: string) {
+  const page = await ensureBrowserPage();
+  await page.keyboard.press(key);
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  return browserReadState();
+}
+
+async function closeBrowserSession() {
+  if (browserPageSession && !browserPageSession.isClosed()) {
+    await browserPageSession.context().close();
+  }
+  browserPageSession = null;
+  if (browserSession) {
+    await browserSession.close();
+  }
+  browserSession = null;
+  return "Browser session closed.";
 }
 
 function readLocalMemoryStore() {
@@ -502,6 +638,78 @@ async function resolveServerToolCall(call: ToolCall) {
         functionResponse: {
           name: "fetch_url",
           response: page,
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_navigate") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_navigate",
+          response: await browserNavigate(String(call.args?.url || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_click") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_click",
+          response: await browserClick(String(call.args?.selector || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_type") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_type",
+          response: await browserType(String(call.args?.selector || ""), String(call.args?.text || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_press") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_press",
+          response: await browserPress(String(call.args?.key || "")),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_read") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_read",
+          response: await browserReadState(),
+        },
+      },
+    };
+  }
+
+  if (call.name === "browser_close") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "browser_close",
+          response: { content: await closeBrowserSession() },
         },
       },
     };
