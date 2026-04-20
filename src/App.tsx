@@ -909,7 +909,7 @@ export default function App() {
 
             {activeView === 'toolbox' && (
               <Suspense fallback={<ViewLoadingFallback />}>
-                <ToolboxView handleLaunchTool={handleLaunchTool} />
+                <ToolboxView handleLaunchTool={handleLaunchTool} onLog={addLog} />
               </Suspense>
             )}
           </AnimatePresence>

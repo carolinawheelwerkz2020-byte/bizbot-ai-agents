@@ -1223,6 +1223,22 @@ function writeLocalMemoryStore(entries: Array<{ fact: string; category: string; 
   fs.writeFileSync(MEMORY_STORE_PATH, JSON.stringify(entries, null, 2), "utf8");
 }
 
+function getAutonomyOverview() {
+  return {
+    registeredTools: readRegisteredTools(),
+    healingRecipes: readHealingRecipes(),
+    relay: {
+      allowedCommands: [...RELAY_ALLOWED_COMMANDS],
+      allowedRoots: RELAY_ALLOWED_ROOTS,
+    },
+    limits: {
+      maxHealingSteps: MAX_HEALING_STEPS,
+      maxFetchedPageChars: MAX_FETCHED_PAGE_CHARS,
+      maxCrawlPages: MAX_CRAWL_PAGES,
+    },
+  };
+}
+
 async function readNeuralMemory(query: string) {
   const normalizedQuery = query.trim().toLowerCase();
   const localEntries = readLocalMemoryStore();
@@ -1679,6 +1695,87 @@ async function startServer() {
       res.json({ success: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown edit error.";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.get("/api/autonomy/overview", (_req, res) => {
+    try {
+      res.json(getAutonomyOverview());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown autonomy overview error.";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/tools", async (req, res) => {
+    try {
+      const tool = await registerTool({
+        id: String(req.body?.id || ""),
+        description: String(req.body?.description || ""),
+        command: String(req.body?.command || ""),
+        cwd: typeof req.body?.cwd === "string" ? req.body.cwd : undefined,
+      });
+      res.json(tool);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown tool registration error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/tools/run", async (req, res) => {
+    try {
+      const result = await runRegisteredTool(String(req.body?.id || ""));
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown tool execution error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/install-package", async (req, res) => {
+    try {
+      const result = await installNpmPackage(
+        String(req.body?.packageName || ""),
+        Boolean(req.body?.saveDev),
+      );
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown npm install error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/healing-recipes", async (req, res) => {
+    try {
+      const recipe = await saveHealingRecipe({
+        id: String(req.body?.id || ""),
+        description: String(req.body?.description || ""),
+        stepsJson: String(req.body?.stepsJson || "[]"),
+      });
+      res.json(recipe);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown healing recipe save error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/healing-recipes/run", async (req, res) => {
+    try {
+      const result = await runHealingRecipe(String(req.body?.id || ""));
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown healing recipe execution error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/autonomy/self-heal", async (_req, res) => {
+    try {
+      const result = await selfHealProject();
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown self-heal error.";
       res.status(500).json({ error: message });
     }
   });
