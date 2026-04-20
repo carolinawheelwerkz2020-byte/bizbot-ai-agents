@@ -3,6 +3,7 @@ import {
   Loader2,
   Menu,
   Settings2,
+  ShieldAlert,
   Globe,
   Terminal,
   Maximize2,
@@ -16,10 +17,11 @@ import {
 import { uploadFileToGeminiViaServer } from './services/upload';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './lib/firebase';
+import { AutonomyService } from './services/autonomy';
 import { PersistenceService } from './services/persistence';
 import { ChatView } from './components/app/ChatView';
 import { Sidebar } from './components/app/Sidebar';
-import type { AppView, Message, SystemLog, WorkflowState } from './components/app/types';
+import type { AppView, ApprovalSummary, Message, SystemLog, WorkflowState } from './components/app/types';
 import { AgentAvatar, Badge } from './components/app/ui';
 
 // --- Constants ---
@@ -385,6 +387,7 @@ export default function App() {
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([
     { msg: "System initialized. Aegis Protocol v2.0 online.", type: 'info' }
   ]);
+  const [approvalSummary, setApprovalSummary] = useState<ApprovalSummary>({ pendingCount: 0 });
   
   const [workflowState, setWorkflowState] = useState<WorkflowState | null>(null);
 
@@ -402,6 +405,35 @@ export default function App() {
     };
     loadPersisted();
   }, [selectedAgent.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadApprovalSummary = async () => {
+      try {
+        const overview = await AutonomyService.getOverview();
+        if (!cancelled) {
+          setApprovalSummary({
+            pendingCount: overview.approvals.filter((approval) => approval.status === 'pending').length,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setApprovalSummary({ pendingCount: 0 });
+        }
+      }
+    };
+
+    void loadApprovalSummary();
+    const intervalId = window.setInterval(() => {
+      void loadApprovalSummary();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const addLog = useCallback((msg: string, type: 'info' | 'warn' | 'success' | 'agent' = 'info') => {
     setSystemLogs(prev => [...prev.slice(-4), { msg, type }]);
@@ -469,6 +501,7 @@ export default function App() {
               timestamp: new Date(),
             };
             setMessages((prev) => [...prev, systemNotice]);
+            setApprovalSummary((prev) => ({ pendingCount: prev.pendingCount + 1 }));
             addLog(`Approval queued: ${approval.type}`, 'warn');
           }
         }
@@ -862,6 +895,7 @@ export default function App() {
 
       <Sidebar
         activeView={activeView}
+        approvalSummary={approvalSummary}
         isMobileMenuOpen={isMobileMenuOpen}
         isSidebarOpen={isSidebarOpen}
         selectedAgent={selectedAgent}
@@ -918,6 +952,15 @@ export default function App() {
                 <Globe size={14} className="text-cyber-lime" /> Global Sync
               </div>
             </div>
+            {approvalSummary.pendingCount > 0 && (
+              <button
+                onClick={() => setActiveView('toolbox')}
+                className="hidden md:flex items-center gap-2 px-4 py-2 rounded-2xl border border-cyber-rose/20 bg-cyber-rose/10 text-cyber-rose text-[10px] font-black uppercase tracking-widest hover:bg-cyber-rose/15 transition-all"
+              >
+                <ShieldAlert size={14} />
+                {approvalSummary.pendingCount} Approval{approvalSummary.pendingCount === 1 ? '' : 's'}
+              </button>
+            )}
             <button className="w-11 h-11 glass rounded-xl flex items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10">
               <Settings2 size={20} />
             </button>

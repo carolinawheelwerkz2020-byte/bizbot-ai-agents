@@ -26,3 +26,7 @@ export type SystemLog = {
   msg: string;
   type: 'info' | 'warn' | 'success' | 'agent';
 };
+
+export type ApprovalSummary = {
+  pendingCount: number;
+};

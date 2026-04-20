@@ -2,6 +2,7 @@ import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
+  AlertTriangle,
   Bot,
   Cpu,
   GitBranch,
@@ -13,7 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { AGENTS, type Agent } from '../../services/gemini';
-import type { AppView, SystemLog } from './types';
+import type { AppView, ApprovalSummary, SystemLog } from './types';
 import { AgentAvatar, Badge, GlassButton, cn } from './ui';
 
 type SidebarProps = {
@@ -26,6 +27,7 @@ type SidebarProps = {
   setIsSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setSelectedAgent: React.Dispatch<React.SetStateAction<Agent>>;
   systemLogs: SystemLog[];
+  approvalSummary: ApprovalSummary;
 };
 
 export function Sidebar({
@@ -38,6 +40,7 @@ export function Sidebar({
   setIsSidebarOpen,
   setSelectedAgent,
   systemLogs,
+  approvalSummary,
 }: SidebarProps) {
   return (
     <AnimatePresence initial={false}>
@@ -79,7 +82,32 @@ export function Sidebar({
               <GlassButton active={activeView === 'chat'} onClick={() => { setActiveView('chat'); setIsMobileMenuOpen(false); }} icon={Activity}>Directives</GlassButton>
               <GlassButton active={activeView === 'agents'} onClick={() => { setActiveView('agents'); setIsMobileMenuOpen(false); }} icon={Bot}>Agent Roster</GlassButton>
               <GlassButton active={activeView === 'workflows'} onClick={() => { setActiveView('workflows'); setIsMobileMenuOpen(false); }} icon={GitBranch}>Pipelines</GlassButton>
-              <GlassButton active={activeView === 'toolbox'} onClick={() => { setActiveView('toolbox'); setIsMobileMenuOpen(false); }} icon={Layers}>Auxiliary</GlassButton>
+              <GlassButton active={activeView === 'toolbox'} onClick={() => { setActiveView('toolbox'); setIsMobileMenuOpen(false); }} icon={Layers}>
+                <span className="flex items-center gap-2">
+                  Auxiliary
+                  {approvalSummary.pendingCount > 0 && (
+                    <span className="inline-flex min-w-5 h-5 px-1.5 items-center justify-center rounded-full bg-cyber-rose/20 border border-cyber-rose/30 text-cyber-rose text-[9px] font-black">
+                      {approvalSummary.pendingCount}
+                    </span>
+                  )}
+                </span>
+              </GlassButton>
+            </div>
+
+            <div className="rounded-2xl border border-cyber-rose/10 bg-cyber-rose/5 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-cyber-rose/10 text-cyber-rose flex items-center justify-center border border-cyber-rose/20">
+                  <AlertTriangle size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-500">Approvals</div>
+                  <div className="text-sm font-black text-white">
+                    {approvalSummary.pendingCount > 0
+                      ? `${approvalSummary.pendingCount} waiting for review`
+                      : 'No pending actions'}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="space-y-4">
