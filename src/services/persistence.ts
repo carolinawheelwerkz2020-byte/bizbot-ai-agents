@@ -1,28 +1,36 @@
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  where, 
-  orderBy, 
-  getDocs, 
+import {
+  addDoc,
+  collection,
+  getDocs,
   onSnapshot,
-  Timestamp,
+  orderBy,
+  query,
   serverTimestamp,
-  type DocumentData
+  where,
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import type { Message } from '../App';
+import type { AttachedFile } from './gemini';
+import type { HandoffPlan } from './handoffPlan';
+
+export interface PersistedMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  agentId?: string;
+  files?: AttachedFile[];
+  timestamp: Date;
+  handoffPlan?: HandoffPlan;
+}
 
 export interface ChatSession {
   id: string;
   userId: string;
   agentId: string;
   lastMessage: string;
-  updatedAt: any;
+  updatedAt: unknown;
 }
 
 export const PersistenceService = {
-  async saveMessage(agentId: string, message: Message) {
+  async saveMessage(agentId: string, message: PersistedMessage) {
     if (!db || !auth?.currentUser) return;
 
     try {
@@ -37,24 +45,24 @@ export const PersistenceService = {
     }
   },
 
-  async getMessages(agentId: string): Promise<Message[]> {
+  async getMessages(agentId: string): Promise<PersistedMessage[]> {
     if (!db || !auth?.currentUser) return [];
 
     try {
       const messagesRef = collection(db, 'chats', auth.currentUser.uid, 'messages');
       const q = query(
-        messagesRef, 
+        messagesRef,
         where('agentId', '==', agentId),
         orderBy('timestamp', 'asc')
       );
-      
+
       const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => {
+      return snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           ...data,
-          timestamp: data.timestamp?.toDate() || new Date()
-        } as Message;
+          timestamp: data.timestamp?.toDate() || new Date(),
+        } as PersistedMessage;
       });
     } catch (error) {
       console.error('Error getting messages:', error);
@@ -62,23 +70,23 @@ export const PersistenceService = {
     }
   },
 
-  subscribeToMessages(agentId: string, callback: (messages: Message[]) => void) {
+  subscribeToMessages(agentId: string, callback: (messages: PersistedMessage[]) => void) {
     if (!db || !auth?.currentUser) return () => {};
 
     const messagesRef = collection(db, 'chats', auth.currentUser.uid, 'messages');
     const q = query(
-      messagesRef, 
+      messagesRef,
       where('agentId', '==', agentId),
       orderBy('timestamp', 'asc')
     );
 
     return onSnapshot(q, (snapshot) => {
-      const messages = snapshot.docs.map(doc => {
+      const messages = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           ...data,
-          timestamp: data.timestamp?.toDate() || new Date()
-        } as Message;
+          timestamp: data.timestamp?.toDate() || new Date(),
+        } as PersistedMessage;
       });
       callback(messages);
     });
