@@ -21,6 +21,10 @@ type RequestHistoryEntry = {
   parts?: Part[];
 };
 
+type AuthenticatedRequest = express.Request & {
+  userEmail?: string;
+};
+
 type RequestFile = {
   mimeType: string;
   data?: string;
@@ -76,6 +80,7 @@ type PendingApproval = {
   reason?: string;
   createdAt: string;
   reviewedAt?: string;
+  reviewedBy?: string;
   result?: unknown;
 };
 
@@ -130,7 +135,7 @@ function getBearerToken(header?: string) {
 }
 
 async function requireAuth(
-  req: express.Request,
+  req: AuthenticatedRequest,
   res: express.Response,
   next: express.NextFunction,
 ) {
@@ -153,6 +158,7 @@ async function requireAuth(
       return res.status(403).json({ error: "Your account is not authorized for this app." });
     }
 
+    req.userEmail = email || undefined;
     return next();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown auth error.";
@@ -1879,7 +1885,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/autonomy/approvals/:id/approve", async (req, res) => {
+  app.post("/api/autonomy/approvals/:id/approve", async (req: AuthenticatedRequest, res) => {
     try {
       const approvals = readApprovals();
       const targetIndex = approvals.findIndex((entry) => entry.id === String(req.params.id || ""));
@@ -1896,6 +1902,7 @@ async function startServer() {
         ...approval,
         status: "approved",
         reviewedAt: new Date().toISOString(),
+        reviewedBy: req.userEmail || "unknown",
         result,
       };
       writeApprovals(approvals);
@@ -1906,7 +1913,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/autonomy/approvals/:id/reject", (req, res) => {
+  app.post("/api/autonomy/approvals/:id/reject", (req: AuthenticatedRequest, res) => {
     try {
       const approvals = readApprovals();
       const targetIndex = approvals.findIndex((entry) => entry.id === String(req.params.id || ""));
@@ -1922,6 +1929,7 @@ async function startServer() {
         ...approval,
         status: "rejected",
         reviewedAt: new Date().toISOString(),
+        reviewedBy: req.userEmail || "unknown",
         reason: typeof req.body?.reason === "string" && req.body.reason.trim()
           ? req.body.reason.trim()
           : "Rejected by operator.",

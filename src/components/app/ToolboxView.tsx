@@ -125,6 +125,13 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     () => overview.approvals.filter((approval) => approval.status === 'pending'),
     [overview.approvals]
   );
+  const reviewedApprovals = useMemo(
+    () => overview.approvals
+      .filter((approval) => approval.status !== 'pending')
+      .sort((a, b) => new Date(b.reviewedAt || b.createdAt).getTime() - new Date(a.reviewedAt || a.createdAt).getTime())
+      .slice(0, 8),
+    [overview.approvals]
+  );
 
   const refreshOverview = async (silent = false) => {
     try {
@@ -448,6 +455,56 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             ))}
             {!isLoadingOverview && pendingApprovals.length === 0 && (
               <div className="text-sm text-zinc-500">No high-impact actions are waiting for approval right now.</div>
+            )}
+          </div>
+        </Card>
+
+        <Card className="p-6 lg:p-8 space-y-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight">Approval History</h3>
+              <p className="text-sm text-zinc-500 mt-2">Recent decisions stay visible here with timestamps, reviewer attribution, and execution output.</p>
+            </div>
+            <Badge color="blue">Audit Trail</Badge>
+          </div>
+
+          <div className="grid gap-4">
+            {reviewedApprovals.map((approval) => (
+              <Card key={approval.id} className="p-5 border-white/10">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Badge color={approval.status === 'approved' ? 'lime' : 'rose'}>
+                      {approval.status}
+                    </Badge>
+                    <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">{approval.type}</span>
+                    <span className="text-xs text-zinc-500">
+                      {new Date(approval.reviewedAt || approval.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="text-sm text-zinc-300">
+                    Reviewer: <span className="text-white font-semibold">{approval.reviewedBy || 'Unknown reviewer'}</span>
+                  </div>
+                  {approval.reason && (
+                    <p className="text-sm text-zinc-400">{approval.reason}</p>
+                  )}
+                  <pre className="whitespace-pre-wrap break-words text-xs text-zinc-300 font-mono rounded-2xl bg-black/20 border border-white/5 px-4 py-3">
+                    {formatApprovalPayload(approval.payload)}
+                  </pre>
+                  {approval.result && (
+                    <div className="rounded-2xl border border-white/5 bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black mb-2">Execution Result</div>
+                      <pre className="whitespace-pre-wrap break-words text-xs text-zinc-300 font-mono">
+                        {typeof approval.result === 'object'
+                          ? formatCommandResult(approval.result as Record<string, unknown>)
+                          : String(approval.result)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+            {!isLoadingOverview && reviewedApprovals.length === 0 && (
+              <div className="text-sm text-zinc-500">No reviewed approvals yet. Once you approve or reject actions, they’ll show up here as an audit trail.</div>
             )}
           </div>
         </Card>

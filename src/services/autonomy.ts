@@ -47,6 +47,7 @@ export type PendingApproval = {
   reason?: string;
   createdAt: string;
   reviewedAt?: string;
+  reviewedBy?: string;
   result?: unknown;
 };
 
