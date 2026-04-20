@@ -11,7 +11,7 @@ import {
 import { db, auth } from '../lib/firebase';
 import type { AttachedFile } from './gemini';
 import type { HandoffPlan } from './handoffPlan';
-import type { RunSummary } from '../components/app/types';
+import type { RunSummary, RunTemplate } from '../components/app/types';
 
 export interface PersistedMessage {
   role: 'user' | 'assistant' | 'system';
@@ -31,6 +31,7 @@ export interface ChatSession {
 }
 
 const RUN_SUMMARIES_STORAGE_KEY = 'bizbot-run-summaries';
+const RUN_TEMPLATES_STORAGE_KEY = 'bizbot-run-templates';
 
 function readLocalRunSummaries(): RunSummary[] {
   if (typeof window === 'undefined') return [];
@@ -60,6 +61,33 @@ function writeLocalRunSummaries(runSummaries: RunSummary[]) {
     window.localStorage.setItem(RUN_SUMMARIES_STORAGE_KEY, JSON.stringify(runSummaries));
   } catch (error) {
     console.error('Error writing local run summaries:', error);
+  }
+}
+
+function readLocalRunTemplates(): RunTemplate[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(RUN_TEMPLATES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<Omit<RunTemplate, 'createdAt'> & { createdAt: string }>;
+    return parsed.map((template) => ({
+      ...template,
+      createdAt: new Date(template.createdAt),
+    }));
+  } catch (error) {
+    console.error('Error reading local run templates:', error);
+    return [];
+  }
+}
+
+function writeLocalRunTemplates(runTemplates: RunTemplate[]) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(RUN_TEMPLATES_STORAGE_KEY, JSON.stringify(runTemplates));
+  } catch (error) {
+    console.error('Error writing local run templates:', error);
   }
 }
 
@@ -134,5 +162,15 @@ export const PersistenceService = {
     const existing = readLocalRunSummaries();
     const next = [runSummary, ...existing].slice(0, 12);
     writeLocalRunSummaries(next);
-  }
+  },
+
+  async getRunTemplates(): Promise<RunTemplate[]> {
+    return readLocalRunTemplates();
+  },
+
+  async saveRunTemplate(runTemplate: RunTemplate) {
+    const existing = readLocalRunTemplates().filter((template) => template.id !== runTemplate.id);
+    const next = [runTemplate, ...existing].slice(0, 20);
+    writeLocalRunTemplates(next);
+  },
 };

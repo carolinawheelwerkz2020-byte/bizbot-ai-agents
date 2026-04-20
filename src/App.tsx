@@ -21,7 +21,7 @@ import { AutonomyService } from './services/autonomy';
 import { PersistenceService } from './services/persistence';
 import { ChatView } from './components/app/ChatView';
 import { Sidebar } from './components/app/Sidebar';
-import type { AppView, ApprovalSummary, Message, RunSummary, SystemLog, WorkflowState } from './components/app/types';
+import type { AppView, ApprovalSummary, Message, RunSummary, RunTemplate, SystemLog, WorkflowState } from './components/app/types';
 import { AgentAvatar, Badge } from './components/app/ui';
 
 // --- Constants ---
@@ -389,6 +389,7 @@ export default function App() {
   ]);
   const [approvalSummary, setApprovalSummary] = useState<ApprovalSummary>({ pendingCount: 0 });
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
+  const [runTemplates, setRunTemplates] = useState<RunTemplate[]>([]);
   
   const [workflowState, setWorkflowState] = useState<WorkflowState | null>(null);
 
@@ -414,6 +415,15 @@ export default function App() {
     };
 
     void loadRunSummaries();
+  }, []);
+
+  useEffect(() => {
+    const loadRunTemplates = async () => {
+      const templates = await PersistenceService.getRunTemplates();
+      setRunTemplates(templates);
+    };
+
+    void loadRunTemplates();
   }, []);
 
   useEffect(() => {
@@ -453,6 +463,26 @@ export default function App() {
     setRunSummaries((prev) => [summary, ...prev].slice(0, 6));
     void PersistenceService.saveRunSummary(summary);
   }, []);
+
+  const handleSaveRunTemplate = useCallback(async (runSummary: RunSummary) => {
+    const suggestedName = `${runSummary.title.slice(0, 40) || 'Autonomous template'}`;
+    const templateName = window.prompt('Name this reusable template:', suggestedName)?.trim();
+    if (!templateName) return;
+
+    const template: RunTemplate = {
+      id: `template-${Date.now()}`,
+      name: templateName,
+      agentId: runSummary.agentId,
+      prompt: runSummary.sourcePrompt,
+      createdAt: new Date(),
+      sourceRunId: runSummary.id,
+      notes: runSummary.notes,
+    };
+
+    setRunTemplates((prev) => [template, ...prev].slice(0, 12));
+    await PersistenceService.saveRunTemplate(template);
+    addLog(`Saved reusable template: ${template.name}`, 'success');
+  }, [addLog]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -942,6 +972,15 @@ export default function App() {
     await handleSendMessage(runSummary.sourcePrompt, replayAgent);
   };
 
+  const handleLaunchTemplate = async (runTemplate: RunTemplate) => {
+    const templateAgent = AGENTS.find((agent) => agent.id === runTemplate.agentId) || selectedAgent;
+    setSelectedAgent(templateAgent);
+    setActiveView('chat');
+    setInput(runTemplate.prompt);
+    addLog(`Launching template: ${runTemplate.name}`, 'agent');
+    await handleSendMessage(runTemplate.prompt, templateAgent);
+  };
+
   return (
     <div className="flex h-screen bg-deep-space text-zinc-100 overflow-hidden font-sans selection:bg-cyber-blue/40 selection:text-white">
       {/* Dynamic Background */}
@@ -1045,7 +1084,10 @@ export default function App() {
                 setInput={setInput}
                 toggleListening={toggleListening}
                 runSummaries={runSummaries}
+                runTemplates={runTemplates}
                 handleReplayRun={handleReplayRun}
+                handleSaveRunTemplate={handleSaveRunTemplate}
+                handleLaunchTemplate={handleLaunchTemplate}
                 workflowState={workflowState}
               />
             )}

@@ -44,3 +44,13 @@ export type RunSummary = {
   workflowLaunched: boolean;
   notes: string;
 };
+
+export type RunTemplate = {
+  id: string;
+  name: string;
+  agentId: string;
+  prompt: string;
+  createdAt: Date;
+  sourceRunId: string;
+  notes?: string;
+};
