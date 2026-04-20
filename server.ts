@@ -35,6 +35,11 @@ type UploadedFile = {
   mimetype: string;
 };
 
+type ToolCall = {
+  name: string;
+  args?: Record<string, unknown>;
+};
+
 const MAX_MESSAGE_LENGTH = 262_144;
 const MAX_FILES = 8;
 const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
@@ -53,6 +58,7 @@ const RELAY_ALLOWED_COMMANDS = new Set([
 const RELAY_ALLOWED_ROOTS = [
   path.resolve(process.env.RELAY_ROOT || process.cwd()),
 ];
+const MEMORY_STORE_PATH = path.join(process.cwd(), ".bizbot-memory.json");
 
 function ensureFirebaseAdmin() {
   if (admin.apps.length > 0) return;
@@ -197,6 +203,171 @@ function validateChatBody(body: {
   }
 
   return null;
+}
+
+function getModelTools(): any[] {
+  return [
+    {
+      functionDeclarations: [
+        {
+          name: "bash",
+          description: "Execute an allowed workspace command on the local system.",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string", description: "The command to execute." },
+              workdir: { type: "string", description: "Optional working directory inside the relay workspace." },
+            },
+            required: ["command"],
+          },
+        },
+        {
+          name: "read_file",
+          description: "Read a file from the allowed workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Path to the file inside the relay workspace." },
+            },
+            required: ["path"],
+          },
+        },
+        {
+          name: "write_file",
+          description: "Write a file inside the allowed workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Path to the file inside the relay workspace." },
+              content: { type: "string", description: "The full content to write." },
+            },
+            required: ["path", "content"],
+          },
+        },
+        {
+          name: "edit_file",
+          description: "Replace a specific block of text in a file inside the allowed workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Path to the file inside the relay workspace." },
+              oldString: { type: "string", description: "The exact text to find." },
+              newString: { type: "string", description: "The replacement text." },
+            },
+            required: ["path", "oldString", "newString"],
+          },
+        },
+        {
+          name: "get_neural_memory",
+          description: "Retrieve durable business or project facts from neural memory.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Query used to retrieve relevant stored facts." },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "update_neural_memory",
+          description: "Save a durable fact, preference, or operating detail to neural memory.",
+          parameters: {
+            type: "object",
+            properties: {
+              fact: { type: "string", description: "The fact to remember." },
+              category: { type: "string", description: "Optional category like preference, shop_detail, or technical_note." },
+            },
+            required: ["fact"],
+          },
+        },
+      ],
+    },
+  ];
+}
+
+function readLocalMemoryStore() {
+  if (!fs.existsSync(MEMORY_STORE_PATH)) {
+    return [] as Array<{ fact: string; category: string; timestamp: string }>;
+  }
+
+  try {
+    const raw = fs.readFileSync(MEMORY_STORE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Array<{ fact?: string; category?: string; timestamp?: string }>;
+    return parsed
+      .filter((entry) => typeof entry.fact === "string" && entry.fact.trim().length > 0)
+      .map((entry) => ({
+        fact: entry.fact!.trim(),
+        category: entry.category || "general",
+        timestamp: entry.timestamp || new Date(0).toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalMemoryStore(entries: Array<{ fact: string; category: string; timestamp: string }>) {
+  fs.writeFileSync(MEMORY_STORE_PATH, JSON.stringify(entries, null, 2), "utf8");
+}
+
+async function readNeuralMemory(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const localEntries = readLocalMemoryStore();
+  const filtered = normalizedQuery
+    ? localEntries.filter((entry) => {
+        const haystack = `${entry.category} ${entry.fact}`.toLowerCase();
+        return normalizedQuery.split(/\s+/).every((token) => haystack.includes(token));
+      })
+    : localEntries;
+
+  const relevant = (filtered.length > 0 ? filtered : localEntries).slice(-12);
+  if (relevant.length === 0) {
+    return "No prior neural memory found.";
+  }
+
+  return relevant
+    .map((entry) => `[${entry.category}] ${entry.fact}`)
+    .join("\n");
+}
+
+async function writeNeuralMemory(fact: string, category?: string) {
+  const entry = {
+    fact: fact.trim(),
+    category: (category || "general").trim() || "general",
+    timestamp: new Date().toISOString(),
+  };
+
+  const localEntries = readLocalMemoryStore();
+  localEntries.push(entry);
+  writeLocalMemoryStore(localEntries);
+  return "Fact saved to neural memory.";
+}
+
+async function resolveServerToolCall(call: ToolCall) {
+  if (call.name === "get_neural_memory") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "get_neural_memory",
+          response: { content: await readNeuralMemory(String(call.args?.query || "")) },
+        },
+      },
+    };
+  }
+
+  if (call.name === "update_neural_memory") {
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "update_neural_memory",
+          response: { content: await writeNeuralMemory(String(call.args?.fact || ""), typeof call.args?.category === "string" ? call.args.category : undefined) },
+        },
+      },
+    };
+  }
+
+  return { handled: false as const };
 }
 
 function normalizeRole(role?: string): "user" | "model" | "function" {
@@ -354,6 +525,7 @@ async function startServer() {
       const model = genAI.getGenerativeModel({
         model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
         systemInstruction,
+        tools: getModelTools(),
       });
 
       const userParts = buildUserParts(message, files, toolResults);
@@ -361,21 +533,50 @@ async function startServer() {
         return res.status(400).json({ error: "No message, files, or tool results were provided." });
       }
 
-      const result = await model.generateContent({
-        contents: [
-          ...history.map((entry) => ({
-            role: normalizeRole(entry.role),
-            parts: entry.parts || [],
-          })),
-          {
-            role: "user",
-            parts: userParts,
-          },
-        ],
-      });
+      const contents = [
+        ...history.map((entry) => ({
+          role: normalizeRole(entry.role),
+          parts: entry.parts || [],
+        })),
+        {
+          role: "user" as const,
+          parts: userParts,
+        },
+      ];
 
-      const response = result.response;
-      const functionCalls = typeof response.functionCalls === "function" ? response.functionCalls() : undefined;
+      let response = (await model.generateContent({ contents })).response;
+      const initialFunctionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
+
+      if (initialFunctionCalls && initialFunctionCalls.length > 0) {
+        const serverToolResponses: Array<{ functionResponse: { name: string; response: { content: string } } }> = [];
+        const clientToolCalls: ToolCall[] = [];
+
+        for (const call of initialFunctionCalls) {
+          const resolution = await resolveServerToolCall(call);
+          if (resolution.handled) {
+            serverToolResponses.push(resolution.response);
+          } else {
+            clientToolCalls.push(call);
+          }
+        }
+
+        if (clientToolCalls.length > 0) {
+          return res.json({ functionCalls: clientToolCalls });
+        }
+
+        if (serverToolResponses.length > 0) {
+          const secondResponse = await model.generateContent({
+            contents: [
+              ...contents,
+              { role: "model", parts: initialFunctionCalls.map((call) => ({ functionCall: call })) },
+              { role: "function", parts: serverToolResponses },
+            ],
+          } as any);
+          response = secondResponse.response;
+        }
+      }
+
+      const functionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
 
       res.json({
         text: response.text(),

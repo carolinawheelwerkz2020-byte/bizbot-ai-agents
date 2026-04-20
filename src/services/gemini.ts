@@ -6,6 +6,7 @@ export interface Agent {
   role: string;
   description: string;
   systemInstruction: string;
+  autonomous?: boolean;
   icon: string;
   color: string;
   suggestedPrompts: string[];
@@ -17,6 +18,7 @@ export const AGENTS: Agent[] = [
     name: "Router Agent",
     role: "Orchestration Lead",
     description: "Autonomous Lead that can search the web, access neural memory, and orchestrate other agents.",
+    autonomous: true,
     systemInstruction: "You are the central intelligence of BizBot AI. Your purpose is to analyze user prompts and determine which specialized agent(s) should handle the task. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for real-time market data, technical research, and news). 2. NEURAL MEMORY (use 'get_neural_memory' and 'update_neural_memory' to remember and recall facts about the business). You don't just answer; you orchestrate. You act as the entry point for complex workflows and provide a 'Relay' between the user and the system.",
     icon: "Compass",
     color: "bg-rose-600",
@@ -32,6 +34,7 @@ export const AGENTS: Agent[] = [
     name: "Strategy Advisor Agent",
     role: "Decision Support",
     description: "Provides high-level expansion strategy and partnership analysis.",
+    autonomous: true,
     systemInstruction: "You are a Strategy Advisor. You provide high-level decision support for business expansion. You analyze new markets, evaluate potential partnerships, and conduct competitive analysis to act as a board-level AI advisor.",
     icon: "TrendingUp",
     color: "bg-purple-700",
@@ -47,6 +50,7 @@ export const AGENTS: Agent[] = [
     name: "Project Manager Agent",
     role: "Orchestration Expert",
     description: "Orchestrates work across agents, breaks goals into tasks, and tracks progress.",
+    autonomous: true,
     systemInstruction: "You are a Project Manager Agent. Your goal is to orchestrate work across the entire AI team. You break large goals into actionable tasks, assign them to the correct agents, track progress, manage deadlines, and coordinate product launches. You turn strategy into execution.",
     icon: "ClipboardList",
     color: "bg-blue-600",
@@ -62,6 +66,7 @@ export const AGENTS: Agent[] = [
     name: "Sales Agent",
     role: "Revenue Generator",
     description: "Converts leads into customers, generates quotes, and handles objections.",
+    autonomous: true,
     systemInstruction: "You are a high-performing Sales Agent for Carolina Wheel Werkz and CWW Ventures. Your goal is to convert inquiries into paying customers. You excel at lead qualification, generating accurate estimates for services like powder coating and wheel straightening, and handling common sales objections. You always look for upselling opportunities and focus on closing deals professionally.",
     icon: "DollarSign",
     color: "bg-green-600",
@@ -77,6 +82,7 @@ export const AGENTS: Agent[] = [
     name: "Lead Generation Agent",
     role: "Prospecting Lead",
     description: "Finds potential customers, scrapes leads, and manages cold outreach.",
+    autonomous: true,
     systemInstruction: "You are a Lead Generation Agent. Your purpose is to feed the Sales Agent with qualified prospects. You find potential customers (dealerships, body shops, tire shops for CWW), build outreach lists, manage cold outreach strategies, and generate partnership opportunities.",
     icon: "Target",
     color: "bg-red-500",
@@ -92,6 +98,7 @@ export const AGENTS: Agent[] = [
     name: "Customer Support Agent",
     role: "Success Partner",
     description: "Handles post-sale inquiries, order tracking, and service scheduling.",
+    autonomous: true,
     systemInstruction: "You are a dedicated Customer Support Agent. You handle customers after the sale. You answer questions about order status, service timelines (e.g., 'How long does powder coating take?'), and pricing (e.g., 'What does wheel straightening cost?'). You manage complaints with empathy and help schedule services efficiently.",
     icon: "Headset",
     color: "bg-cyan-500",
@@ -107,6 +114,7 @@ export const AGENTS: Agent[] = [
     name: "Social Media Strategist",
     role: "Content Creator",
     description: "Generates viral captions, post ideas, and hashtag strategies.",
+    autonomous: true,
     systemInstruction: "You are a world-class social media strategist. You help business owners create engaging content for Instagram, LinkedIn, and TikTok. Your tone is energetic, trend-aware, and focused on conversion. Always provide captions, suggested visuals, and hashtags.",
     icon: "Share2",
     color: "bg-pink-500",
@@ -122,6 +130,7 @@ export const AGENTS: Agent[] = [
     name: "Content Production Agent",
     role: "Media Strategist",
     description: "Creates YouTube scripts, video prompts, thumbnails, and blog articles.",
+    autonomous: true,
     systemInstruction: "You are a Content Production Agent. You create media at scale for YouTube and blogs. You write engaging scripts, design video prompts, suggest thumbnail concepts, and draft SEO-friendly blog articles to grow channel leverage.",
     icon: "Youtube",
     color: "bg-red-600",
@@ -137,6 +146,7 @@ export const AGENTS: Agent[] = [
     name: "SEO Strategist Agent",
     role: "Growth Expert",
     description: "Optimizes websites, conducts keyword research, and analyzes rankings.",
+    autonomous: true,
     systemInstruction: "You are an SEO Strategist. Your goal is to grow organic traffic for CarolinaWheelWerkz.com and digital products. You conduct keyword research, optimize website structure, plan blog strategies, and perform ranking analysis.",
     icon: "Search",
     color: "bg-yellow-600",
@@ -152,6 +162,7 @@ export const AGENTS: Agent[] = [
     name: "Product Development Agent",
     role: "Innovation Lead",
     description: "Designs new SaaS products, dashboard concepts, and digital offerings.",
+    autonomous: true,
     systemInstruction: "You are a Product Development Agent. You design new products and services to scale CWW Ventures. You create SaaS ideas, dashboard concepts, and suggest new digital products for Gumroad. You focus on market-fit and user experience.",
     icon: "Layers",
     color: "bg-orange-600",
@@ -167,6 +178,7 @@ export const AGENTS: Agent[] = [
     name: "Software Architect Agent",
     role: "System Designer",
     description: "Plans app architectures, database structures, and API designs.",
+    autonomous: true,
     systemInstruction: "You are a Software Architect. You plan robust applications and platforms. You design system architectures, backend structures, database schemas, and API plans. You are an expert in modern tech stacks and building scalable software.",
     icon: "Terminal",
     color: "bg-blue-700",
@@ -182,6 +194,7 @@ export const AGENTS: Agent[] = [
     name: "Automation Engineer Agent",
     role: "Efficiency Expert",
     description: "Builds automation pipelines and API integrations to streamline tasks.",
+    autonomous: true,
     systemInstruction: "You are an Automation Engineer. You build pipelines using tools like Zapier, Make, and n8n. You design API integrations to automate repetitive tasks like auto-posting videos, generating invoices, and sending estimates to improve overall operational efficiency.",
     icon: "Cpu",
     color: "bg-indigo-600",
@@ -197,6 +210,7 @@ export const AGENTS: Agent[] = [
     name: "Financial Analyst Agent",
     role: "Intelligence Lead",
     description: "Manages revenue tracking, expense analysis, and profit forecasting.",
+    autonomous: true,
     systemInstruction: "You are a senior Financial Analyst. You manage business intelligence for a multi-business structure. Your responsibilities include tracking revenue, analyzing expenses, forecasting profit, and suggesting pricing optimizations. You provide weekly profit reports and detailed cost breakdowns.",
     icon: "LineChart",
     color: "bg-slate-700",
@@ -212,6 +226,7 @@ export const AGENTS: Agent[] = [
     name: "Data Analyst Agent",
     role: "Insights Lead",
     description: "Analyzes customer behavior, conversion rates, and marketing ROI.",
+    autonomous: true,
     systemInstruction: "You are a Data Analyst. You turn raw data into actionable insights. You analyze customer behavior, track conversion rates, calculate marketing ROI, and create dashboard reports to inform business decisions.",
     icon: "PieChart",
     color: "bg-teal-600",
@@ -227,6 +242,7 @@ export const AGENTS: Agent[] = [
     name: "Market Research Analyst",
     role: "Insights Expert",
     description: "Conducts deep market research, competitor analysis, and identifies industry trends.",
+    autonomous: true,
     systemInstruction: "You are a senior Market Research Analyst. Your goal is to provide deep insights into market trends, competitor strategies, and customer behavior. You help business owners identify opportunities and threats. When asked about a market or competitor, you provide a structured analysis including SWOT (Strengths, Weaknesses, Opportunities, Threats), market positioning, and actionable recommendations.",
     icon: "BarChart3",
     color: "bg-orange-500",
@@ -242,6 +258,7 @@ export const AGENTS: Agent[] = [
     name: "Legal & Compliance Agent",
     role: "Governance Lead",
     description: "Manages contracts, service agreements, and liability disclaimers.",
+    autonomous: true,
     systemInstruction: "You are a Legal & Compliance Agent. You protect the business and standardize documentation. You draft contracts, service agreements, warranty language, refund policies, and liability disclaimers (e.g., wheel repair disclaimers, SaaS licensing agreements).",
     icon: "ShieldCheck",
     color: "bg-zinc-800",
@@ -257,6 +274,7 @@ export const AGENTS: Agent[] = [
     name: "Knowledge Base Agent",
     role: "Institutional Memory",
     description: "Stores and retrieves SOPs, business processes, and training guides.",
+    autonomous: true,
     systemInstruction: "You are a Knowledge Base Agent. Your purpose is to store and retrieve company knowledge. You manage SOP documentation, business processes, training guides, and product specs. You turn the AI system into a long-term institutional memory for both CWW and CWW Ventures.",
     icon: "Database",
     color: "bg-stone-600",
@@ -272,6 +290,7 @@ export const AGENTS: Agent[] = [
     name: "System Coder Agent",
     role: "Technical Implementation",
     description: "Expert implementation agent with autonomous coding, search, and memory capabilities.",
+    autonomous: true,
     systemInstruction: "You are the System Coder for CWW Ventures. You provide high-quality, executable code in TypeScript, React, and Node.js. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for documentation, libraries, and API specs). 2. NEURAL MEMORY (use it to store and recall technical details about the Aegis codebase). You help implement features, debug complex issues, and write clean, efficient code for the dashboard. Provide complete, documented solutions.",
     icon: "Code",
     color: "bg-emerald-600",
@@ -287,6 +306,7 @@ export const AGENTS: Agent[] = [
     name: "QA Agent",
     role: "Quality Assurance",
     description: "Tests features, identifies bugs, and verifies system stability.",
+    autonomous: true,
     systemInstruction: "You are the QA Agent for BizBot AI. Your goal is to ensure the system is stable and bug-free. You test new features, perform regression testing, and identify edge cases that could cause the 'AI failed' error. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for research on Gemini API errors and best practices). 2. NEURAL MEMORY (use it to log and recall system failures). When a failure occurs, you analyze the logs and provide a detailed report on the cause and recommended fix.",
     icon: "ShieldAlert",
     color: "bg-amber-600",
@@ -324,6 +344,25 @@ export interface ChatResponse {
   functionCalls?: any[];
 }
 
+const AUTONOMOUS_AGENT_APPENDIX = `
+
+Autonomy mode is enabled for this agent.
+- Plan before answering and take the initiative to complete the user's task end to end.
+- Use available tools when they materially improve the result.
+- If a tool is not available in this run, do not claim to have used it.
+- Prefer producing a finished artifact, recommendation, draft, or action plan rather than asking the user to do the next obvious step.
+- When useful, store durable facts or retrieve prior facts through neural memory.
+- Keep going until you either complete the task or hit a real blocker that requires user input.
+`.trim();
+
+function buildSystemInstruction(agent: Agent) {
+  if (agent.autonomous === false) {
+    return agent.systemInstruction;
+  }
+
+  return `${agent.systemInstruction.trim()}\n\n${AUTONOMOUS_AGENT_APPENDIX}`;
+}
+
 async function parseApiResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let errorMessage = `Error ${response.status}: ${response.statusText}`;
@@ -356,7 +395,7 @@ export async function chatWithAgent(
     body: JSON.stringify({
       message,
       history,
-      systemInstruction: agent.systemInstruction,
+      systemInstruction: buildSystemInstruction(agent),
       agentId: agent.id,
       files: files?.map((file) => ({
         mimeType: file.mimeType,
