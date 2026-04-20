@@ -30,3 +30,16 @@ export type SystemLog = {
 export type ApprovalSummary = {
   pendingCount: number;
 };
+
+export type RunSummary = {
+  id: string;
+  agentId: string;
+  title: string;
+  startedAt: Date;
+  completedAt: Date;
+  status: 'completed' | 'failed';
+  handoffCount: number;
+  approvalCount: number;
+  workflowLaunched: boolean;
+  notes: string;
+};

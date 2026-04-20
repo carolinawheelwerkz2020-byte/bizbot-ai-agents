@@ -20,6 +20,7 @@ import {
 import { AGENTS, type Agent, type AttachedFile } from '../../services/gemini';
 import { handoffPlanToWorkflow } from '../../services/handoffPlan';
 import type { Message, WorkflowState } from './types';
+import type { RunSummary } from './types';
 import { AgentAvatar, Button, cn } from './ui';
 
 type ChatViewProps = {
@@ -38,6 +39,7 @@ type ChatViewProps = {
   toggleListening: () => void;
   workflowState: WorkflowState | null;
   executeWorkflow: (workflow: WorkflowState['workflow']) => Promise<void>;
+  runSummaries: RunSummary[];
 };
 
 export function ChatView({
@@ -56,6 +58,7 @@ export function ChatView({
   toggleListening,
   workflowState,
   executeWorkflow,
+  runSummaries,
 }: ChatViewProps) {
   return (
     <>
@@ -67,6 +70,60 @@ export function ChatView({
         className="flex-1 overflow-y-auto px-10 pb-40 pt-10 custom-scrollbar"
       >
         <div className="max-w-4xl mx-auto space-y-12">
+          {runSummaries.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-dark border-white/5 rounded-[2.5rem] p-6 lg:p-8 space-y-5"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-2xl font-black tracking-tight">Recent Autonomous Runs</h3>
+                  <p className="text-sm text-zinc-500 mt-2">A quick summary of what the agents just attempted and how each run ended.</p>
+                </div>
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">
+                  <Database size={14} className="text-cyber-blue" />
+                  Session Reports
+                </div>
+              </div>
+
+              <div className="grid gap-4">
+                {runSummaries.map((summary) => {
+                  const summaryAgent = AGENTS.find((agent) => agent.id === summary.agentId) || selectedAgent;
+                  return (
+                    <div key={summary.id} className="rounded-3xl border border-white/5 bg-black/20 px-5 py-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex items-start gap-4">
+                          <AgentAvatar agent={summaryAgent} size="sm" />
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <span className="text-sm font-black text-white">{summary.title}</span>
+                              <span className={cn(
+                                'text-[10px] font-black uppercase tracking-[0.2em]',
+                                summary.status === 'completed' ? 'text-cyber-lime' : 'text-cyber-rose'
+                              )}>
+                                {summary.status}
+                              </span>
+                            </div>
+                            <p className="text-sm text-zinc-400 leading-relaxed">{summary.notes}</p>
+                            <div className="flex flex-wrap gap-3 text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">
+                              <span>{summary.handoffCount} handoff{summary.handoffCount === 1 ? '' : 's'}</span>
+                              <span>{summary.approvalCount} approval{summary.approvalCount === 1 ? '' : 's'}</span>
+                              <span>{summary.workflowLaunched ? 'workflow launched' : 'no workflow'}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">
+                          {summary.completedAt.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+
           {messages.length === 0 && !workflowState && (
             <div className="py-24 flex flex-col items-center text-center space-y-12">
               <motion.div
