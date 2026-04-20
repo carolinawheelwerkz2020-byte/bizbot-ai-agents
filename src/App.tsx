@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Send, 
   Bot, 
@@ -79,6 +79,8 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
+import { auth } from './lib/firebase';
+import { PersistenceService, type PersistedMessage } from './services/persistence';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -92,20 +94,75 @@ const ICON_MAP: Record<string, any> = {
 // --- Constants ---
 const INLINE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 
-interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  agentId?: string;
-  files?: AttachedFile[];
-  timestamp: Date;
-  handoffPlan?: HandoffPlan;
-}
+export interface Message extends PersistedMessage {}
 
 interface WorkflowState {
   workflow: WorkflowShape;
   currentStep: number;
   isRunning: boolean;
   outputs: string[];
+}
+
+type SystemLog = {
+  msg: string;
+  type: 'info' | 'warn' | 'success' | 'agent';
+};
+
+type RelayFunctionCall = {
+  name: 'bash' | 'read_file' | 'write_file' | 'edit_file';
+  args: Record<string, string>;
+};
+
+type RelayFunctionResult = {
+  functionResponse: {
+    name: string;
+    response: unknown;
+  };
+};
+
+function messageToHistoryParts(message: Message): ChatHistoryEntry | null {
+  if (message.role === 'system') return null;
+
+  if (message.role === 'assistant') {
+    return {
+      role: 'model',
+      parts: [{ text: message.content }],
+    };
+  }
+
+  const parts: Array<Record<string, unknown>> = [];
+  if (message.content) {
+    parts.push({ text: message.content });
+  }
+
+  for (const file of message.files || []) {
+    if (file.geminiFile?.uri) {
+      parts.push({
+        fileData: {
+          fileUri: file.geminiFile.uri,
+          mimeType: file.geminiFile.mimeType || file.mimeType,
+        },
+      });
+    } else if (file.data) {
+      parts.push({
+        inlineData: {
+          mimeType: file.mimeType,
+          data: file.data,
+        },
+      });
+    }
+  }
+
+  return {
+    role: 'user',
+    parts,
+  };
+}
+
+function buildHistoryFromMessages(messages: Message[]): ChatHistoryEntry[] {
+  return messages
+    .map(messageToHistoryParts)
+    .filter((entry): entry is ChatHistoryEntry => Boolean(entry));
 }
 
 // --- Components ---
@@ -164,9 +221,6 @@ const Badge = ({ children, color = 'blue', className = '' }: { children: React.R
   );
 };
 
-import { auth } from './lib/firebase';
-import { PersistenceService } from './services/persistence';
-
 export default function App() {
   const [activeView, setActiveView] = useState<'chat' | 'agents' | 'workflows' | 'toolbox'>('chat');
   const [selectedAgent, setSelectedAgent] = useState<Agent>(AGENTS.find(a => a.id === 'router') || AGENTS[0]);
@@ -178,7 +232,7 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [systemLogs, setSystemLogs] = useState<Array<{ msg: string, type: 'info' | 'warn' | 'success' | 'agent' }>>([
+  const [systemLogs, setSystemLogs] = useState<SystemLog[]>([
     { msg: "System initialized. Aegis Protocol v2.0 online.", type: 'info' }
   ]);
   
@@ -233,29 +287,11 @@ export default function App() {
     PersistenceService.saveMessage(agent.id, newMsg);
 
     try {
-      const historyToUpload: ChatHistoryEntry[] = [];
-      messages.filter(m => m.role !== 'system').forEach(m => {
-        // If message is from user, add it as a 'user' role
-        if (m.role === 'user') {
-          historyToUpload.push({
-            role: 'user',
-            parts: [{ text: m.content }]
-          });
-        } 
-        // If message is from assistant, add it as 'model' role
-        else if (m.role === 'assistant') {
-          historyToUpload.push({
-            role: 'model',
-            parts: [{ text: m.content }]
-          });
-        }
-      });
-
-      let currentHistory: ChatHistoryEntry[] = [...historyToUpload];
+      let currentHistory: ChatHistoryEntry[] = buildHistoryFromMessages(messages);
       let isRunning = true;
       let lastText = text;
       let lastFiles = newMsg.files;
-      let nextToolResults: any[] | undefined = undefined;
+      let nextToolResults: RelayFunctionResult[] | undefined = undefined;
 
       while (isRunning) {
         const response = await chatWithAgent(agent, lastText, currentHistory, lastFiles, nextToolResults);
@@ -279,16 +315,17 @@ export default function App() {
         }
 
         if (response.functionCalls && response.functionCalls.length > 0) {
-          const toolResults: any[] = [];
+          const toolResults: RelayFunctionResult[] = [];
           
-          for (const call of response.functionCalls) {
+          for (const call of response.functionCalls as RelayFunctionCall[]) {
             addLog(`RELAY ACTIVE: Executing ${call.name}...`, 'info');
-            let result;
+            let result: unknown;
             
             try {
               if (call.name === 'bash') {
                 result = await RelayBridge.exec(call.args.command, call.args.workdir);
-                addLog(`Relay: Command executed (Exit: ${result.exitCode})`, result.exitCode === 0 ? 'success' : 'warn');
+                const execResult = result as { exitCode?: number };
+                addLog(`Relay: Command executed (Exit: ${execResult.exitCode ?? 'unknown'})`, execResult.exitCode === 0 ? 'success' : 'warn');
               } else if (call.name === 'read_file') {
                 result = await RelayBridge.read_file(call.args.path);
                 addLog(`Relay: Read ${call.args.path}`, 'info');
@@ -306,12 +343,13 @@ export default function App() {
                   response: result
                 }
               });
-            } catch (toolErr) {
-              addLog(`Relay Error: ${toolErr.message}`, 'warn');
+            } catch (toolErr: unknown) {
+              const errorMessage = toolErr instanceof Error ? toolErr.message : 'Unknown relay error.';
+              addLog(`Relay Error: ${errorMessage}`, 'warn');
               toolResults.push({
                 functionResponse: {
                   name: call.name,
-                  response: { error: toolErr.message }
+                  response: { error: errorMessage }
                 }
               });
             }
@@ -471,17 +509,18 @@ export default function App() {
       addLog(`Step ${i + 1}: ${agent.name} is thinking...`, 'agent');
 
       // Replace placeholders
-      let prompt = step.prompt
+      const prompt = step.prompt
         .replace('{{input}}', baseInput)
         .replace('{{previous}}', allOutputs[i - 1] || "No previous output.")
         .replace('{{all_previous}}', allOutputs.join('\n\n---\n\n'));
 
       try {
         const response = await chatWithAgent(agent, prompt, [], []);
-        allOutputs.push(response);
+        const responseText = response.text || 'No response generated.';
+        allOutputs.push(responseText);
         setMessages(prev => [...prev, { 
           role: 'assistant', 
-          content: `## ⚡ Workflow Step ${i + 1}: ${agent.name}\n\n${response}`, 
+          content: `## ⚡ Workflow Step ${i + 1}: ${agent.name}\n\n${responseText}`, 
           agentId: agent.id, 
           timestamp: new Date() 
         }]);
@@ -509,8 +548,9 @@ export default function App() {
             preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
           }]);
           addLog(`${file.name} ready (Cloud Storage)`, 'success');
-        } catch (err) {
-          addLog(`Failed to upload ${file.name}`, 'warn');
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : 'Unknown upload error.';
+          addLog(`Failed to upload ${file.name}: ${errorMessage}`, 'warn');
         }
       } else {
         const reader = new FileReader();
@@ -839,9 +879,11 @@ export default function App() {
                             ? "bg-gradient-to-br from-cyber-blue to-blue-800 text-white rounded-tr-none border border-white/20" 
                             : "glass-dark rounded-tl-none text-zinc-300 border-white/5"
                         )}>
-                          <ReactMarkdown className="prose prose-invert max-w-none prose-zinc">
-                            {msg.content}
-                          </ReactMarkdown>
+                          <div className="prose prose-invert max-w-none prose-zinc">
+                            <ReactMarkdown>
+                              {msg.content}
+                            </ReactMarkdown>
+                          </div>
 
                           {msg.handoffPlan && (
                             <div className="mt-8 p-6 bg-cyber-lime/10 border border-cyber-lime/30 rounded-3xl space-y-4 text-left">

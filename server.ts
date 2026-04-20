@@ -28,6 +28,12 @@ type RequestFile = {
   };
 };
 
+type UploadedFile = {
+  originalname: string;
+  buffer: Buffer;
+  mimetype: string;
+};
+
 function normalizeRole(role?: string): "user" | "model" | "function" {
   if (role === "model" || role === "function") return role;
   return "user";
@@ -205,20 +211,22 @@ async function startServer() {
   });
 
   app.post("/api/upload", upload.single("file"), async (req, res) => {
-    if (!req.file) {
+    const uploadedBinary = (req as typeof req & { file?: UploadedFile }).file;
+
+    if (!uploadedBinary) {
       return res.status(400).json({ error: "No file uploaded." });
     }
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bizbot-upload-"));
-    const tempPath = path.join(tempDir, req.file.originalname);
+    const tempPath = path.join(tempDir, uploadedBinary.originalname);
 
     try {
       const { fileManager } = createGeminiClients();
-      fs.writeFileSync(tempPath, req.file.buffer);
+      fs.writeFileSync(tempPath, uploadedBinary.buffer);
 
       const uploadResult = await fileManager.uploadFile(tempPath, {
-        mimeType: req.file.mimetype,
-        displayName: req.file.originalname,
+        mimeType: uploadedBinary.mimetype,
+        displayName: uploadedBinary.originalname,
       });
 
       let uploadedFile = uploadResult.file;
@@ -240,9 +248,9 @@ async function startServer() {
 
       res.json({
         uri: uploadedFile.uri,
-        mimeType: uploadedFile.mimeType || req.file.mimetype,
+        mimeType: uploadedFile.mimeType || uploadedBinary.mimetype,
         resourceName: uploadedFile.name,
-        displayName: uploadedFile.displayName || req.file.originalname,
+        displayName: uploadedFile.displayName || uploadedBinary.originalname,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown upload error.";
