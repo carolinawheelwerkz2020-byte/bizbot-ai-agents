@@ -1,42 +1,28 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
-  Bot, 
-  ChevronRight, 
-  LayoutDashboard,
-  Sparkles,
   Loader2,
-  Layers,
-  Target,
-  Share2,
-  ShieldCheck,
-  Database,
   Menu,
-  Plus,
   Settings2,
-  Video,
-  BarChart3,
-  Play,
   Globe,
   Terminal,
   Maximize2,
-  ArrowRight,
-  GitBranch,
-  Workflow as WorkflowIcon,
 } from 'lucide-react';
 import { AGENTS, chatWithAgent, Agent, AttachedFile, type ChatHistoryEntry, RelayBridge } from './services/gemini';
 import { 
   parseHandoffPlanFromMessage, 
-  BUILTIN_WORKFLOWS, 
   type WorkflowShape,
 } from './services/handoffPlan';
 import { uploadFileToGeminiViaServer } from './services/upload';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './lib/firebase';
 import { PersistenceService } from './services/persistence';
+import { AgentsView } from './components/app/AgentsView';
 import { ChatView } from './components/app/ChatView';
 import { Sidebar } from './components/app/Sidebar';
+import { ToolboxView } from './components/app/ToolboxView';
+import { WorkflowsView } from './components/app/WorkflowsView';
 import type { AppView, Message, SystemLog, WorkflowState } from './components/app/types';
-import { AgentAvatar, Badge, Button, Card, cn } from './components/app/ui';
+import { AgentAvatar, Badge } from './components/app/ui';
 
 // --- Constants ---
 const INLINE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
@@ -548,273 +534,18 @@ export default function App() {
             )}
 
             {activeView === 'agents' && (
-              <motion.div
-                key="agents"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="flex-1 overflow-y-auto px-10 py-12 custom-scrollbar"
-              >
-                <div className="max-w-6xl mx-auto space-y-16">
-                  <div className="flex items-end justify-between border-b border-white/5 pb-10">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-cyber-blue/10 rounded-lg text-cyber-blue">
-                          <Bot size={24} />
-                        </div>
-                        <Badge color="blue">Global Intelligence Network</Badge>
-                      </div>
-                      <h2 className="text-5xl font-serif font-black tracking-tighter italic">Neural Roster</h2>
-                      <p className="text-zinc-500 font-medium text-lg max-w-xl">
-                        Deploy specialized AI protocols to manage every facet of your business operations.
-                      </p>
-                    </div>
-                    <Button variant="primary" className="!py-5 !px-10 !text-[11px]" icon={Plus}>Initialize Agent</Button>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
-                    {AGENTS.map(agent => (
-                      <Card key={agent.id} className="group hover:border-cyber-blue/30 transition-all duration-700 p-10 space-y-8 flex flex-col hover:shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)]">
-                        <div className="flex items-start justify-between">
-                          <div className="relative">
-                            <AgentAvatar agent={agent} size="lg" glow />
-                            <div className="absolute -bottom-2 -right-2 w-6 h-6 bg-void rounded-lg border border-white/10 flex items-center justify-center text-cyber-lime">
-                              <ShieldCheck size={14} />
-                            </div>
-                          </div>
-                          <div className="flex flex-col items-end gap-3">
-                            <Badge color={agent.id === 'router' ? 'rose' : 'blue'}>
-                              {agent.id === 'router' ? 'System Gateway' : 'Specialized'}
-                            </Badge>
-                            <div className="flex gap-1.5">
-                              {[1, 2, 3].map(i => (
-                                <div key={i} className="w-1.5 h-1.5 rounded-full bg-cyber-lime shadow-[0_0_8px_#A3E635]" />
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <div className="flex-1">
-                          <h3 className="text-2xl font-black mb-2 group-hover:text-cyber-blue transition-colors tracking-tight">{agent.name}</h3>
-                          <p className="text-[11px] text-zinc-700 uppercase font-black tracking-[0.25em] mb-4">{agent.role}</p>
-                          <p className="text-sm text-zinc-500 leading-relaxed group-hover:text-zinc-400 transition-colors">
-                            {agent.description}
-                          </p>
-                        </div>
-
-                        <div className="pt-8 border-t border-white/5 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="flex -space-x-3">
-                              {[1, 2, 3].map(i => (
-                                <div key={i} className="w-8 h-8 rounded-xl border-2 border-void bg-zinc-900 flex items-center justify-center text-[10px] font-black text-zinc-600">
-                                  {i}
-                                </div>
-                              ))}
-                            </div>
-                            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-700">Capabilities</span>
-                          </div>
-                          <button 
-                            onClick={() => {
-                              setSelectedAgent(agent);
-                              setActiveView('chat');
-                            }}
-                            className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center text-zinc-600 hover:bg-cyber-blue hover:text-white hover:shadow-[0_0_15px_rgba(59,130,246,0.5)] transition-all"
-                          >
-                            <ArrowRight size={18} />
-                          </button>
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
+              <AgentsView
+                setActiveView={setActiveView}
+                setSelectedAgent={setSelectedAgent}
+              />
             )}
 
             {activeView === 'workflows' && (
-              <motion.div
-                key="workflows"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="flex-1 overflow-y-auto px-10 py-12 custom-scrollbar"
-              >
-                <div className="max-w-6xl mx-auto space-y-16">
-                  <div className="flex items-end justify-between border-b border-white/5 pb-10">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-cyber-lime/10 rounded-lg text-cyber-lime">
-                          <GitBranch size={24} />
-                        </div>
-                        <Badge color="lime">Autonomous Orchestration</Badge>
-                      </div>
-                      <h2 className="text-5xl font-serif font-black tracking-tighter italic">Operational Pipelines</h2>
-                      <p className="text-zinc-500 font-medium text-lg max-w-xl">
-                        Chain specialized agents into powerful automated sequences to achieve complex business outcomes.
-                      </p>
-                    </div>
-                    <Button variant="secondary" className="!py-5 !px-10 !text-[11px] border-cyber-lime/20 text-cyber-lime hover:bg-cyber-lime hover:text-void" icon={Plus}>Architect Workflow</Button>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pb-20">
-                    {BUILTIN_WORKFLOWS.map(workflow => (
-                      <Card key={workflow.id} className="group hover:border-cyber-lime/30 transition-all duration-500 p-10 space-y-8 glass shadow-2xl">
-                        <div className="flex items-start justify-between">
-                          <div className="w-16 h-16 bg-gradient-to-tr from-zinc-900 to-zinc-800 rounded-2xl flex items-center justify-center text-cyber-lime border border-white/10 shadow-xl group-hover:scale-110 transition-transform">
-                            <WorkflowIcon size={32} />
-                          </div>
-                          <div className="px-3 py-1.5 bg-cyber-lime/10 border border-cyber-lime/20 rounded-xl text-[10px] font-black text-cyber-lime uppercase tracking-widest">
-                            Built-in Protocol
-                          </div>
-                        </div>
-                        
-                        <div>
-                          <h3 className="text-2xl font-black mb-3 group-hover:text-cyber-lime transition-colors tracking-tight">{workflow.name}</h3>
-                          <p className="text-zinc-500 leading-relaxed font-medium">
-                            {workflow.description}
-                          </p>
-                        </div>
-
-                        <div className="space-y-4">
-                          <p className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-700">Workflow Sequence</p>
-                          <div className="flex items-center gap-3">
-                            {workflow.steps.map((step, idx) => {
-                              const stepAgent = AGENTS.find(a => a.id === step.agentId);
-                              return (
-                                <React.Fragment key={idx}>
-                                  <div className="group/step relative">
-                                    <AgentAvatar agent={stepAgent || AGENTS[0]} size="sm" />
-                                    <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1 bg-zinc-900 border border-white/10 rounded-lg text-[9px] font-black uppercase text-white opacity-0 group-hover/step:opacity-100 transition-opacity whitespace-nowrap">
-                                      {stepAgent?.name}
-                                    </div>
-                                  </div>
-                                  {idx < workflow.steps.length - 1 && (
-                                    <ChevronRight size={14} className="text-zinc-800" />
-                                  )}
-                                </React.Fragment>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        <div className="pt-8 border-t border-white/5">
-                          <Button 
-                            variant="primary" 
-                            className="w-full !bg-white/5 !text-white !border-white/10 hover:!bg-cyber-lime hover:!text-void hover:!border-cyber-lime hover:glow-blue" 
-                            icon={Play}
-                            onClick={() => executeWorkflow(workflow)}
-                          >
-                            Deploy Pipeline
-                          </Button>
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
+              <WorkflowsView executeWorkflow={executeWorkflow} />
             )}
 
             {activeView === 'toolbox' && (
-              <motion.div
-                key="toolbox"
-                initial={{ opacity: 0, scale: 1.05 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="flex-1 overflow-y-auto px-10 py-12 custom-scrollbar"
-              >
-                <div className="max-w-6xl mx-auto space-y-16">
-                   <div className="flex items-end justify-between border-b border-white/5 pb-10">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-amber-500/10 rounded-lg text-amber-500">
-                          <Layers size={24} />
-                        </div>
-                        <Badge color="gold">Auxiliary System Utilities</Badge>
-                      </div>
-                      <h2 className="text-5xl font-serif font-black tracking-tighter italic">Enterprise Toolbox</h2>
-                      <p className="text-zinc-500 font-medium text-lg max-w-xl">
-                        Advanced utilities for data extraction, media processing, and system-wide knowledge management.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Auxiliary Control Panel (from screenshot 2) */}
-                  <div className="space-y-8">
-                    <div className="flex items-center gap-4">
-                       <div className="w-px h-8 bg-cyber-blue shadow-[0_0_10px_#3B82F6]" />
-                       <h3 className="text-2xl font-black uppercase tracking-tighter">Auxiliary Control</h3>
-                    </div>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                      <Card className="p-10 space-y-6 border-cyber-lime/20 hover:border-cyber-lime transition-all group">
-                         <div className="w-16 h-16 bg-cyber-lime/10 rounded-2xl flex items-center justify-center text-cyber-lime group-hover:glow-blue transition-all">
-                            <Sparkles size={32} />
-                         </div>
-                         <div className="space-y-2">
-                            <h4 className="text-xl font-black tracking-tight">Visualizer Engine 3.0</h4>
-                            <p className="text-zinc-500 text-sm font-medium">Hybrid segmentation & photorealistic rendering.</p>
-                         </div>
-                         <Button variant="primary" className="w-full" onClick={() => handleLaunchTool('visualizer')}>
-                            Launch Tool
-                         </Button>
-                      </Card>
-
-                      <Card className="p-10 space-y-6 border-cyber-blue/20 hover:border-cyber-blue transition-all group">
-                         <div className="w-16 h-16 bg-cyber-blue/10 rounded-2xl flex items-center justify-center text-cyber-blue group-hover:glow-blue transition-all">
-                            <Globe size={32} />
-                         </div>
-                         <div className="space-y-2">
-                            <h4 className="text-xl font-black tracking-tight">SEO Bridge Master</h4>
-                            <p className="text-zinc-500 text-sm font-medium">Programmatic SEO automation & sitemap generation.</p>
-                         </div>
-                         <Button variant="primary" className="w-full" onClick={() => handleLaunchTool('seo')}>
-                            Generate Sitemap
-                         </Button>
-                      </Card>
-
-                      <Card className="p-10 space-y-6 border-purple-500/20 hover:border-purple-500 transition-all group">
-                         <div className="w-16 h-16 bg-purple-500/10 rounded-2xl flex items-center justify-center text-purple-500 group-hover:glow-blue transition-all">
-                            <Video size={32} />
-                         </div>
-                         <div className="space-y-2">
-                            <h4 className="text-xl font-black tracking-tight">Media Producer Hub</h4>
-                            <p className="text-zinc-500 text-sm font-medium">Vertical viral video generator & media studio.</p>
-                         </div>
-                         <Button variant="primary" className="w-full" onClick={() => handleLaunchTool('media')}>
-                            Open Producer
-                         </Button>
-                      </Card>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                    {[
-                      { id: 'dashboard', name: 'Shop Dashboard', desc: 'Multi-tenant CRM & Pipeline management.', icon: LayoutDashboard, color: 'bg-cyber-blue' },
-                      { id: 'analytics', name: 'Market Intelligence', desc: 'Deep data insights & trend analysis.', icon: BarChart3, color: 'bg-indigo-500' },
-                      { id: 'knowledge', name: 'Brain Sync', desc: 'Centralized institutional memory & SOPs.', icon: Database, color: 'bg-stone-500' },
-                      { id: 'social', name: 'Content Engine', desc: 'Cross-platform viral content generation.', icon: Share2, color: 'bg-cyber-rose' },
-                      { id: 'leads', name: 'Lead Velocity', desc: 'High-conversion lead identification.', icon: Target, color: 'bg-orange-500' },
-                    ].map(tool => (
-                      <Card key={tool.id} className="group hover:border-white/20 transition-all duration-500 p-8 space-y-6 glass-dark flex flex-col items-center text-center">
-                        <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center text-white mb-2 shadow-2xl group-hover:scale-110 transition-transform", tool.color)}>
-                          <tool.icon size={32} />
-                        </div>
-                        <div className="flex-1 space-y-2">
-                          <h3 className="text-lg font-black tracking-tight group-hover:text-white transition-colors">{tool.name}</h3>
-                          <p className="text-[11px] text-zinc-600 leading-relaxed font-medium">
-                            {tool.desc}
-                          </p>
-                        </div>
-                        <button 
-                          onClick={() => handleLaunchTool(tool.id)}
-                          className="w-full py-3 bg-white/5 rounded-xl text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:bg-cyber-blue hover:text-white transition-all border border-white/5 shadow-inner"
-                        >
-                          Launch Module
-                        </button>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
+              <ToolboxView handleLaunchTool={handleLaunchTool} />
             )}
           </AnimatePresence>
 
