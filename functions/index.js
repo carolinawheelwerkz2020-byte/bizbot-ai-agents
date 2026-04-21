@@ -21,6 +21,89 @@ app.use(cors({ origin: true }));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
+const APPROVAL_POLICY = {
+  register_tool: { requestRole: "operator", approveRole: "approver" },
+  install_npm_package: { requestRole: "approver", approveRole: "admin" },
+  save_healing_recipe: { requestRole: "operator", approveRole: "approver" },
+  run_healing_recipe: { requestRole: "operator", approveRole: "approver" },
+  self_heal_project: { requestRole: "approver", approveRole: "admin" },
+};
+
+const CLOUD_LIMITATION_MESSAGE =
+  "This feature is only available in the desktop/local runtime. The Firebase-hosted app supports chat, uploads, and cloud-safe history, but not local shell, file editing, package install, or Playwright browser control.";
+
+function getEmailsFromEnv(name) {
+  return (process.env[name] || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getUserRole(email) {
+  if (!email) return "operator";
+  if (getEmailsFromEnv("ADMIN_EMAILS").includes(email)) return "admin";
+  if (getEmailsFromEnv("APPROVER_EMAILS").includes(email)) return "approver";
+  return "operator";
+}
+
+async function getOverviewForCloud(req) {
+  const db = admin.firestore();
+  const [runsSnapshot, templatesSnapshot] = await Promise.all([
+    db.collection("bizbot_run_history").orderBy("completedAt", "desc").limit(20).get().catch(() => null),
+    db.collection("bizbot_run_templates").orderBy("createdAt", "desc").limit(20).get().catch(() => null),
+  ]);
+
+  const recentRuns = runsSnapshot ? runsSnapshot.docs.map((doc) => doc.data()) : [];
+  const recentTemplates = templatesSnapshot ? templatesSnapshot.docs.map((doc) => doc.data()) : [];
+
+  return {
+    registeredTools: [],
+    healingRecipes: [],
+    approvals: [],
+    approvalPolicy: APPROVAL_POLICY,
+    currentUserRole: req.userRole || "operator",
+    browser: {
+      sessionOpen: false,
+      headless: true,
+      artifactsDir: "Cloud runtime unavailable",
+      recentTrace: [],
+      currentUrl: "",
+      lastError: CLOUD_LIMITATION_MESSAGE,
+    },
+    schedules: [],
+    jobRuns: [],
+    telemetry: {
+      pendingApprovals: 0,
+      approvedApprovals: 0,
+      rejectedApprovals: 0,
+      activeSchedules: 0,
+      runningJobs: 0,
+      completedJobs: recentRuns.filter((entry) => entry && entry.status === "completed").length,
+      failedJobs: recentRuns.filter((entry) => entry && entry.status === "failed").length,
+      browserSuccesses: 0,
+      browserFailures: 0,
+    },
+    relay: {
+      allowedCommands: [],
+      allowedRoots: [],
+    },
+    limits: {
+      maxHealingSteps: 12,
+      maxFetchedPageChars: 12000,
+      maxCrawlPages: 20,
+    },
+    cloudMode: true,
+    historyStats: {
+      recentRuns: recentRuns.length,
+      recentTemplates: recentTemplates.length,
+    },
+  };
+}
+
+function unsupportedCloudAction(res) {
+  return res.status(400).json({ error: CLOUD_LIMITATION_MESSAGE });
+}
+
 async function requireAuth(req, res, next) {
   try {
     if (process.env.AUTH_DISABLED === "true") return next();
@@ -40,6 +123,8 @@ async function requireAuth(req, res, next) {
     if (allowed.length > 0 && !allowed.includes(email)) {
       return res.status(403).json({ error: "Your account is not authorized for this app." });
     }
+    req.userEmail = email || undefined;
+    req.userRole = getUserRole(email || undefined);
     next();
   } catch (e) {
     console.error("requireAuth", e && e.message ? e.message : e);
@@ -386,6 +471,108 @@ async function handleChat(req, res, stream) {
 
 apiRouter.post("/chat/stream", (req, res) => handleChat(req, res, true));
 apiRouter.post("/chat", (req, res) => handleChat(req, res, false));
+
+apiRouter.get("/autonomy/overview", async (req, res) => {
+  try {
+    res.json(await getOverviewForCloud(req));
+  } catch (error) {
+    console.error("autonomy overview", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load cloud autonomy overview." });
+  }
+});
+
+apiRouter.post("/autonomy/tools", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/tools/run", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/install-package", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/healing-recipes", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/healing-recipes/run", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/self-heal", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/approvals/:id/approve", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/approvals/:id/reject", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/schedules", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/schedules/:id/toggle", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/schedules/:id/run", (_req, res) => unsupportedCloudAction(res));
+apiRouter.post("/autonomy/browser/replay", (_req, res) => unsupportedCloudAction(res));
+
+apiRouter.get("/history/runs", async (_req, res) => {
+  try {
+    const snapshot = await admin.firestore()
+      .collection("bizbot_run_history")
+      .orderBy("completedAt", "desc")
+      .limit(100)
+      .get();
+    res.json({ runs: snapshot.docs.map((doc) => doc.data()) });
+  } catch (error) {
+    console.error("history runs", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to read run history." });
+  }
+});
+
+apiRouter.post("/history/runs", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.id || !payload.agentId || !payload.title || !payload.startedAt || !payload.completedAt || !payload.status) {
+      return res.status(400).json({ error: "Missing required run summary fields." });
+    }
+    const entry = {
+      id: String(payload.id),
+      agentId: String(payload.agentId),
+      title: String(payload.title),
+      sourcePrompt: String(payload.sourcePrompt || ""),
+      startedAt: String(payload.startedAt),
+      completedAt: String(payload.completedAt),
+      status: payload.status === "failed" ? "failed" : "completed",
+      handoffCount: Number(payload.handoffCount || 0),
+      approvalCount: Number(payload.approvalCount || 0),
+      workflowLaunched: Boolean(payload.workflowLaunched),
+      notes: String(payload.notes || ""),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await admin.firestore().collection("bizbot_run_history").doc(entry.id).set(entry, { merge: true });
+    res.json(entry);
+  } catch (error) {
+    console.error("save run history", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to save run history." });
+  }
+});
+
+apiRouter.get("/history/templates", async (_req, res) => {
+  try {
+    const snapshot = await admin.firestore()
+      .collection("bizbot_run_templates")
+      .orderBy("createdAt", "desc")
+      .limit(100)
+      .get();
+    res.json({ templates: snapshot.docs.map((doc) => doc.data()) });
+  } catch (error) {
+    console.error("history templates", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to read run templates." });
+  }
+});
+
+apiRouter.post("/history/templates", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.id || !payload.name || !payload.agentId || !payload.prompt || !payload.createdAt || !payload.sourceRunId) {
+      return res.status(400).json({ error: "Missing required run template fields." });
+    }
+    const entry = {
+      id: String(payload.id),
+      name: String(payload.name),
+      agentId: String(payload.agentId),
+      prompt: String(payload.prompt),
+      createdAt: String(payload.createdAt),
+      sourceRunId: String(payload.sourceRunId),
+      notes: typeof payload.notes === "string" ? payload.notes : "",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await admin.firestore().collection("bizbot_run_templates").doc(entry.id).set(entry, { merge: true });
+    res.json(entry);
+  } catch (error) {
+    console.error("save run template", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to save run template." });
+  }
+});
 
 apiRouter.post("/send-email", async (req, res) => {
   try {

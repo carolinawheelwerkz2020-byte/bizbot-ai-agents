@@ -202,6 +202,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     () => overview.browser.recentTrace.slice(0, 6),
     [overview.browser.recentTrace]
   );
+  const cloudMode = useMemo(
+    () => overview.relay.allowedCommands.length === 0 && overview.relay.allowedRoots.length === 0,
+    [overview.relay.allowedCommands.length, overview.relay.allowedRoots.length]
+  );
   const recentJobRuns = useMemo(
     () => overview.jobRuns.slice(0, 8),
     [overview.jobRuns]
@@ -559,6 +563,20 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
           </Card>
         </div>
 
+        {cloudMode && (
+          <Card className="p-6 lg:p-8 border-white/10 bg-amber-500/5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h3 className="text-2xl font-black tracking-tight">Cloud Runtime Mode</h3>
+                <p className="text-sm text-zinc-400 mt-2">
+                  This Firebase deployment supports chat, uploads, and cloud-synced run history. Local shell tools, file editing, package installs, self-heal, and Playwright browser automation stay disabled here because they require the desktop runtime.
+                </p>
+              </div>
+              <Badge color="gold">Hosted Firebase</Badge>
+            </div>
+          </Card>
+        )}
+
         <Card className="p-6 lg:p-8 space-y-6 border-white/10 bg-white/[0.02]">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -732,10 +750,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                     </pre>
                   </div>
                   <div className="flex gap-3">
-                    <Button variant="secondary" icon={Play} onClick={() => void handleApprove(approval)}>
+                    <Button variant="secondary" icon={Play} onClick={() => void handleApprove(approval)} disabled={cloudMode}>
                       Approve
                     </Button>
-                    <Button variant="danger" onClick={() => void handleReject(approval)}>
+                    <Button variant="danger" onClick={() => void handleReject(approval)} disabled={cloudMode}>
                       Reject
                     </Button>
                   </div>
@@ -922,10 +940,12 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
               </div>
 
               <div className="flex flex-wrap items-center gap-4">
-                <Button variant="primary" icon={Wrench} onClick={() => void handleRegisterTool()}>
+                <Button variant="primary" icon={Wrench} onClick={() => void handleRegisterTool()} disabled={cloudMode}>
                   Register Tool
                 </Button>
-                <span className="text-xs text-zinc-500">Allowed executables: {relaySummary}</span>
+                <span className="text-xs text-zinc-500">
+                  {cloudMode ? 'Desktop-only command tools are disabled in Firebase hosting.' : `Allowed executables: ${relaySummary}`}
+                </span>
               </div>
 
               <div className="grid gap-4">
@@ -949,6 +969,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                         variant="secondary"
                         icon={Play}
                         loading={runningToolId === tool.id}
+                        disabled={cloudMode}
                         onClick={() => void handleRunTool(tool.id)}
                       >
                         Run Tool
@@ -993,10 +1014,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                   Save as dev dependency
                 </label>
                 <div className="flex flex-wrap gap-3">
-                  <Button variant="secondary" icon={PackagePlus} onClick={() => void handleInstallPackage()}>
+                  <Button variant="secondary" icon={PackagePlus} onClick={() => void handleInstallPackage()} disabled={cloudMode}>
                     Install Package
                   </Button>
-                  <Button variant="primary" icon={RefreshCcw} loading={isSelfHealing} onClick={() => void handleSelfHeal()}>
+                  <Button variant="primary" icon={RefreshCcw} loading={isSelfHealing} onClick={() => void handleSelfHeal()} disabled={cloudMode}>
                     Run Self-Heal
                   </Button>
                 </div>
@@ -1039,7 +1060,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                     className="min-h-48 w-full rounded-3xl bg-black/20 border border-white/10 px-4 py-4 text-sm outline-none focus:border-cyber-blue/40 font-mono"
                   />
                 </label>
-                <Button variant="primary" icon={Activity} onClick={() => void handleSaveRecipe()}>
+                <Button variant="primary" icon={Activity} onClick={() => void handleSaveRecipe()} disabled={cloudMode}>
                   Save Healing Recipe
                 </Button>
               </div>
@@ -1060,6 +1081,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                           variant="secondary"
                           icon={Play}
                           loading={runningRecipeId === recipe.id}
+                          disabled={cloudMode}
                           onClick={() => void handleRunRecipe(recipe.id)}
                         >
                           Run Recipe
@@ -1139,7 +1161,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                 </label>
               </div>
 
-              <Button variant="primary" icon={CalendarClock} onClick={() => void handleCreateSchedule()}>
+              <Button variant="primary" icon={CalendarClock} onClick={() => void handleCreateSchedule()} disabled={cloudMode}>
                 Create Background Job
               </Button>
 
@@ -1168,12 +1190,14 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                             variant="secondary"
                             icon={Play}
                             loading={runningScheduleId === schedule.id}
+                            disabled={cloudMode}
                             onClick={() => void handleRunScheduleNow(schedule.id)}
                           >
                             Run Now
                           </Button>
                           <Button
                             variant={schedule.status === 'active' ? 'danger' : 'primary'}
+                            disabled={cloudMode}
                             onClick={() => void handleToggleSchedule(schedule.id, schedule.status !== 'active')}
                           >
                             {schedule.status === 'active' ? 'Pause' : 'Resume'}
@@ -1232,7 +1256,9 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
               </div>
 
               <div className="text-xs text-zinc-500 leading-relaxed">
-                Relay roots: {overview.relay.allowedRoots.length > 0 ? overview.relay.allowedRoots.join(' | ') : 'Loading...'}
+                {cloudMode
+                  ? 'Hosted Firebase mode is active. Desktop-only autonomy controls stay disabled here.'
+                  : `Relay roots: ${overview.relay.allowedRoots.length > 0 ? overview.relay.allowedRoots.join(' | ') : 'Loading...'}`}
               </div>
             </Card>
           </div>
