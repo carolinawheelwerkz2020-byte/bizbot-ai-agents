@@ -1,7 +1,7 @@
 import type { WorkflowShape } from '../../services/handoffPlan';
 import type { PersistedMessage } from '../../services/persistence';
 
-export type AppView = 'chat' | 'agents' | 'workflows' | 'toolbox';
+export type AppView = 'chat' | 'agents' | 'workflows' | 'toolbox' | 'docs';
 
 export interface Message extends PersistedMessage {}
 

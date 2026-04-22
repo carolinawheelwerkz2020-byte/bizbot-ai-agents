@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React from 'react';
 import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -12,8 +12,6 @@ import {
   Paperclip,
   Send,
   Sparkles,
-  Search,
-  BookmarkPlus,
   User,
   Workflow as WorkflowIcon,
   X,
@@ -70,25 +68,6 @@ export function ChatView({
   handleSaveRunTemplate,
   handleLaunchTemplate,
 }: ChatViewProps) {
-  const [runSearch, setRunSearch] = useState('');
-  const [runFilter, setRunFilter] = useState<'all' | 'failed' | 'approvals' | 'workflow'>('all');
-
-  const filteredRunSummaries = useMemo(() => {
-    const normalizedSearch = runSearch.trim().toLowerCase();
-
-    return runSummaries.filter((summary) => {
-      const matchesSearch = !normalizedSearch
-        || `${summary.title} ${summary.notes} ${summary.agentId}`.toLowerCase().includes(normalizedSearch);
-
-      const matchesFilter = runFilter === 'all'
-        || (runFilter === 'failed' && summary.status === 'failed')
-        || (runFilter === 'approvals' && summary.approvalCount > 0)
-        || (runFilter === 'workflow' && summary.workflowLaunched);
-
-      return matchesSearch && matchesFilter;
-    });
-  }, [runFilter, runSearch, runSummaries]);
-
   return (
     <>
       <motion.div
@@ -99,163 +78,6 @@ export function ChatView({
         className="flex-1 overflow-y-auto px-10 pb-40 pt-10 custom-scrollbar"
       >
         <div className="max-w-4xl mx-auto space-y-12">
-          {runTemplates.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="glass-dark border-white/5 rounded-[2.5rem] p-6 lg:p-8 space-y-5"
-            >
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-2xl font-black tracking-tight">Reusable Templates</h3>
-                  <p className="text-sm text-zinc-500 mt-2">Promote successful runs into reusable playbooks you can relaunch in one click.</p>
-                </div>
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">
-                  <BookmarkPlus size={14} className="text-cyber-lime" />
-                  Playbooks
-                </div>
-              </div>
-
-              <div className="grid gap-4">
-                {runTemplates.map((template) => {
-                  const templateAgent = AGENTS.find((agent) => agent.id === template.agentId) || selectedAgent;
-                  return (
-                    <div key={template.id} className="rounded-3xl border border-white/5 bg-black/20 px-5 py-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="flex items-start gap-4">
-                          <AgentAvatar agent={templateAgent} size="sm" />
-                          <div className="space-y-2">
-                            <div className="text-sm font-black text-white">{template.name}</div>
-                            {template.notes && (
-                              <p className="text-sm text-zinc-400 leading-relaxed">{template.notes}</p>
-                            )}
-                            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">
-                              {templateAgent.name} · saved {template.createdAt.toLocaleDateString()}
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => void handleLaunchTemplate(template)}
-                          className="px-4 py-2 rounded-2xl bg-cyber-lime/10 border border-cyber-lime/20 text-cyber-lime text-[10px] font-black uppercase tracking-[0.2em] hover:bg-cyber-lime hover:text-void transition-all"
-                        >
-                          Launch Template
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </motion.div>
-          )}
-
-          {runSummaries.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="glass-dark border-white/5 rounded-[2.5rem] p-6 lg:p-8 space-y-5"
-            >
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-2xl font-black tracking-tight">Recent Autonomous Runs</h3>
-                  <p className="text-sm text-zinc-500 mt-2">A quick summary of what the agents just attempted and how each run ended.</p>
-                </div>
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">
-                  <Database size={14} className="text-cyber-blue" />
-                  Session Reports
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="relative flex-1 max-w-xl">
-                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" />
-                  <input
-                    value={runSearch}
-                    onChange={(event) => setRunSearch(event.target.value)}
-                    placeholder="Search run titles, notes, or agent ids..."
-                    className="w-full rounded-2xl bg-white/5 border border-white/10 pl-11 pr-4 py-3 text-sm outline-none focus:border-cyber-blue/40 placeholder:text-zinc-700"
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { id: 'all', label: 'All Runs' },
-                    { id: 'failed', label: 'Failed' },
-                    { id: 'approvals', label: 'Needs Approval' },
-                    { id: 'workflow', label: 'Workflow Launched' },
-                  ].map((filter) => (
-                    <button
-                      key={filter.id}
-                      onClick={() => setRunFilter(filter.id as typeof runFilter)}
-                      className={cn(
-                        'px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] border transition-all',
-                        runFilter === filter.id
-                          ? 'bg-cyber-blue/10 border-cyber-blue/30 text-cyber-blue'
-                          : 'bg-white/5 border-white/10 text-zinc-500 hover:text-white hover:border-white/20'
-                      )}
-                    >
-                      {filter.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid gap-4">
-                {filteredRunSummaries.map((summary) => {
-                  const summaryAgent = AGENTS.find((agent) => agent.id === summary.agentId) || selectedAgent;
-                  return (
-                    <div key={summary.id} className="rounded-3xl border border-white/5 bg-black/20 px-5 py-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="flex items-start gap-4">
-                          <AgentAvatar agent={summaryAgent} size="sm" />
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-3 flex-wrap">
-                              <span className="text-sm font-black text-white">{summary.title}</span>
-                              <span className={cn(
-                                'text-[10px] font-black uppercase tracking-[0.2em]',
-                                summary.status === 'completed' ? 'text-cyber-lime' : 'text-cyber-rose'
-                              )}>
-                                {summary.status}
-                              </span>
-                            </div>
-                            <p className="text-sm text-zinc-400 leading-relaxed">{summary.notes}</p>
-                            <div className="flex flex-wrap gap-3 text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">
-                              <span>{summary.handoffCount} handoff{summary.handoffCount === 1 ? '' : 's'}</span>
-                              <span>{summary.approvalCount} approval{summary.approvalCount === 1 ? '' : 's'}</span>
-                              <span>{summary.workflowLaunched ? 'workflow launched' : 'no workflow'}</span>
-                            </div>
-                            {summary.sourcePrompt && (
-                              <div className="pt-1 flex flex-wrap gap-2">
-                                <button
-                                  onClick={() => void handleReplayRun(summary)}
-                                  className="px-4 py-2 rounded-2xl bg-cyber-blue/10 border border-cyber-blue/20 text-cyber-blue text-[10px] font-black uppercase tracking-[0.2em] hover:bg-cyber-blue hover:text-white transition-all"
-                                >
-                                  Replay Run
-                                </button>
-                                <button
-                                  onClick={() => void handleSaveRunTemplate(summary)}
-                                  className="px-4 py-2 rounded-2xl bg-cyber-lime/10 border border-cyber-lime/20 text-cyber-lime text-[10px] font-black uppercase tracking-[0.2em] hover:bg-cyber-lime hover:text-void transition-all"
-                                >
-                                  Save As Template
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 font-black">
-                          {summary.completedAt.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {filteredRunSummaries.length === 0 && (
-                  <div className="rounded-3xl border border-dashed border-white/10 bg-black/10 px-5 py-8 text-sm text-zinc-500 text-center">
-                    No runs match the current search and filter settings.
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
           {messages.length === 0 && !workflowState && (
             <div className="py-24 flex flex-col items-center text-center space-y-12">
               <motion.div
@@ -468,9 +290,7 @@ export function ChatView({
                   >
                     <span>{msg.timestamp.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}</span>
                     <div className="w-1 h-1 rounded-full bg-zinc-800" />
-                    <button className="hover:text-cyber-blue transition-colors">Duplicate</button>
-                    <div className="w-1 h-1 rounded-full bg-zinc-800" />
-                    <button className="hover:text-cyber-rose transition-colors">Discard</button>
+                    <span>{msg.role === 'user' ? 'User input' : msg.role === 'system' ? 'System notice' : 'Agent response'}</span>
                   </div>
                 </div>
 

@@ -6,6 +6,8 @@
   "scripts": {
     "aegis": "tsx server.ts",
     "dev": "tsx server.ts",
+    "worker": "tsx workers/client.ts",
+    "validate:workers": "tsx scripts/validate-worker-system.ts",
     "build": "vite build",
     "preview": "vite preview",
     "seo": "node scripts/seo-automation.js && node scripts/generate-sitemap.js",

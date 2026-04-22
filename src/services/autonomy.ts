@@ -107,6 +107,38 @@ export type JobRun = {
   outputSummary?: string;
 };
 
+export type WorkerCapability =
+  | 'shell'
+  | 'filesystem'
+  | 'git'
+  | 'npm'
+  | 'playwright'
+  | 'browser'
+  | 'seo_audit'
+  | 'memory'
+  | 'scheduler'
+  | 'tool'
+  | 'command'
+  | 'file:read'
+  | 'file:write'
+  | 'file:edit';
+
+export type WorkerNode = {
+  id: string;
+  name: string;
+  platform: 'mac' | 'macos' | 'windows' | 'linux' | 'cloud' | 'unknown';
+  status: 'online' | 'offline' | 'busy';
+  lastHeartbeat: string;
+  lastHeartbeatAt: string;
+  capabilities: WorkerCapability[];
+  currentTask?: string;
+  currentTaskId?: string;
+  endpoint?: string;
+  host?: string;
+  metadata?: Record<string, unknown>;
+  failedTasksCount?: number;
+};
+
 export type AutonomyOverview = {
   registeredTools: RegisteredTool[];
   healingRecipes: HealingRecipe[];
@@ -139,6 +171,13 @@ export type AutonomyOverview = {
     allowedCommands: string[];
     allowedRoots: string[];
   };
+  execution?: {
+    mode: 'local-first' | 'remote-preferred';
+    workerHeartbeatTtlMs: number;
+    cloudSafeTools: string[];
+    workerRequiredTools: string[];
+  };
+  workers?: WorkerNode[];
   limits: {
     maxHealingSteps: number;
     maxFetchedPageChars: number;

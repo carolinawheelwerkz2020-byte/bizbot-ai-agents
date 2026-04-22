@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import os from "node:os";
 import path from "path";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "url";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -11,6 +11,16 @@ import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import admin from "firebase-admin";
 import { chromium, type Browser, type Page } from "playwright";
+import { createCommandPolicy } from "./relay/commandPolicy";
+import { createFilePolicy } from "./relay/filePolicy";
+import { ExecutionRouter } from "./relay/executionRouter";
+import { LocalExecutor } from "./relay/localExecutor";
+import { executionError } from "./relay/errors";
+import { isWorkerRequestAuthorized, unauthorizedWorkerResponse } from "./relay/workerAuth";
+import { logWorkerEvent } from "./relay/logger";
+import { WorkerRegistry } from "./storage/workerRegistry";
+import { ExecutionDiagnosticsStore } from "./storage/executionDiagnostics";
+import type { ExecutionRequest, WorkerCapability, WorkerPlatform, WorkerStatus } from "./relay/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -181,6 +191,7 @@ const RUN_TEMPLATES_PATH = path.join(process.cwd(), ".bizbot-run-templates.json"
 const BROWSER_TRACE_PATH = path.join(process.cwd(), ".bizbot-browser-trace.json");
 const SCHEDULED_JOBS_PATH = path.join(process.cwd(), ".bizbot-scheduled-jobs.json");
 const JOB_RUNS_PATH = path.join(process.cwd(), ".bizbot-job-runs.json");
+const WORKER_HEARTBEAT_TTL_MS = Number(process.env.WORKER_HEARTBEAT_TTL_MS || 45_000);
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
 const MAX_HEALING_STEPS = 12;
@@ -204,6 +215,23 @@ const APPROVAL_POLICY: Record<ApprovalActionType, { requestRole: UserRole; appro
   run_healing_recipe: { requestRole: "operator", approveRole: "approver" },
   self_heal_project: { requestRole: "approver", approveRole: "admin" },
 };
+
+const commandPolicy = createCommandPolicy(RELAY_ALLOWED_COMMANDS);
+const filePolicy = createFilePolicy(RELAY_ALLOWED_ROOTS);
+const workerRegistry = new WorkerRegistry(WORKER_HEARTBEAT_TTL_MS);
+const executionDiagnostics = new ExecutionDiagnosticsStore();
+const localExecutor = new LocalExecutor({
+  commandPolicy,
+  filePolicy,
+  defaultCwd: process.cwd(),
+  timeoutMs: 60_000,
+});
+const executionRouter = new ExecutionRouter({
+  localExecutor,
+  workerRegistry,
+  diagnostics: executionDiagnostics,
+  preferRemote: process.env.BIZBOT_PREFER_REMOTE_WORKERS === "true",
+});
 
 let browserSession: Browser | null = null;
 let browserPageSession: Page | null = null;
@@ -260,6 +288,13 @@ async function requireAuth(
   res: express.Response,
   next: express.NextFunction,
 ) {
+  if (req.path.startsWith("/workers")) {
+    const workerAuth = isWorkerRequestAuthorized(req.headers);
+    if (workerAuth.ok) {
+      return next();
+    }
+  }
+
   if (AUTH_DISABLED) {
     return next();
   }
@@ -600,29 +635,18 @@ function validateHealingSteps(input: unknown) {
 }
 
 async function runCommandInWorkspace(command: string, cwd?: string) {
-  const { executable, args } = validateRelayCommand(command);
-  const resolvedCwd = resolveRelayPath(cwd && cwd.trim() ? cwd : process.cwd());
-
-  return new Promise<{
-    stdout: string;
-    stderr: string;
-    exitCode: number;
-    signal: string | null;
-  }>((resolve, reject) => {
-    execFile(executable, args, { cwd: resolvedCwd, timeout: 120_000 }, (error, stdout, stderr) => {
-      if (error && typeof error.code !== "number") {
-        reject(error);
-        return;
-      }
-
-      resolve({
-        stdout: stdout || "",
-        stderr: stderr || "",
-        exitCode: typeof error?.code === "number" ? error.code : 0,
-        signal: error?.signal || null,
-      });
-    });
+  const result = await localExecutor.execute({
+    kind: "command",
+    command,
+    workdir: cwd && cwd.trim() ? cwd : process.cwd(),
   });
+
+  return {
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    exitCode: typeof result.exitCode === "number" ? result.exitCode : result.ok ? 0 : 1,
+    signal: result.signal || null,
+  };
 }
 
 async function registerTool(input: {
@@ -1315,8 +1339,10 @@ function getModelTools(): any[] {
 
 function parseHttpUrl(input: string) {
   let parsed: URL;
+  const trimmed = input.trim();
+  const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
-    parsed = new URL(input);
+    parsed = new URL(candidate);
   } catch {
     throw new Error("A valid http or https URL is required.");
   }
@@ -1326,6 +1352,23 @@ function parseHttpUrl(input: string) {
   }
 
   return parsed;
+}
+
+function isSearchEngineResultsUrl(url: URL) {
+  const hostname = url.hostname.replace(/^www\./, "").toLowerCase();
+  const pathname = url.pathname.toLowerCase();
+  return (
+    (hostname === "google.com" && (pathname.startsWith("/search") || pathname.startsWith("/sorry")))
+    || (hostname === "bing.com" && pathname.startsWith("/search"))
+    || (hostname === "duckduckgo.com" && pathname === "/")
+  );
+}
+
+function assertNotSearchEngineResultsUrl(url: URL) {
+  if (!isSearchEngineResultsUrl(url)) return;
+  throw new Error(
+    "Search engine result pages are blocked because they trigger captcha in automated browser sessions. Use direct competitor URLs, fetch_url, crawl_site, seo_audit_url, or ask the user for the missing URL.",
+  );
 }
 
 function htmlToText(html: string) {
@@ -1470,7 +1513,9 @@ function extractLinks(html: string, baseUrl: URL) {
 }
 
 async function openBrowserUrl(url: string) {
-  const safeUrl = parseHttpUrl(url).toString();
+  const parsed = parseHttpUrl(url);
+  assertNotSearchEngineResultsUrl(parsed);
+  const safeUrl = parsed.toString();
 
   if (process.platform === "win32") {
     const child = spawn("cmd", ["/c", "start", "", safeUrl], {
@@ -1500,12 +1545,25 @@ async function openBrowserUrl(url: string) {
 }
 
 async function fetchUrlContent(url: string) {
-  const safeUrl = parseHttpUrl(url).toString();
-  const response = await fetch(safeUrl, {
-    headers: {
-      "User-Agent": "BizBot-Agent/1.0",
-    },
-  });
+  const parsed = parseHttpUrl(url);
+  assertNotSearchEngineResultsUrl(parsed);
+  const safeUrl = parsed.toString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  let response: Response;
+  try {
+    response = await fetch(safeUrl, {
+      headers: {
+        "User-Agent": "BizBot-Agent/1.0",
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "fetch failed";
+    throw new Error(`Failed to fetch ${safeUrl}: ${reason}`);
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
@@ -1695,7 +1753,9 @@ async function crawlSite(startUrl: string, requestedMaxPages?: number) {
 async function browserNavigate(url: string) {
   return runBrowserAction("browser_navigate", { url }, async () => {
     const page = await ensureBrowserPage();
-    const safeUrl = parseHttpUrl(url).toString();
+    const parsed = parseHttpUrl(url);
+    assertNotSearchEngineResultsUrl(parsed);
+    const safeUrl = parsed.toString();
     await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     const title = await page.title().catch(() => "");
     const textContent = await page.locator("body").innerText().catch(() => "");
@@ -1873,6 +1933,13 @@ function getAutonomyOverview() {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
       allowedRoots: RELAY_ALLOWED_ROOTS,
     },
+    execution: {
+      mode: process.env.BIZBOT_PREFER_REMOTE_WORKERS === "true" ? "remote-preferred" : "local-first",
+      workerHeartbeatTtlMs: WORKER_HEARTBEAT_TTL_MS,
+      cloudSafeTools: ["chat", "upload", "history", "templates", "memory"],
+      workerRequiredTools: ["bash", "read_file", "write_file", "edit_file", "browser_*", "registered_tools", "self_heal"],
+    },
+    workers: workerRegistry.list(),
     limits: {
       maxHealingSteps: MAX_HEALING_STEPS,
       maxFetchedPageChars: MAX_FETCHED_PAGE_CHARS,
@@ -2313,10 +2380,122 @@ function buildUserParts(message: string, files: RequestFile[] = [], toolResults:
   return parts;
 }
 
+function normalizeWorkerPlatform(value: unknown): WorkerPlatform {
+  if (value === "mac" || value === "macos" || value === "windows" || value === "linux" || value === "cloud") {
+    return value;
+  }
+  return "unknown";
+}
+
+function normalizeWorkerStatus(value: unknown): WorkerStatus {
+  if (value === "online" || value === "offline" || value === "busy") {
+    return value;
+  }
+  return "online";
+}
+
+function normalizeWorkerCapabilities(value: unknown): WorkerCapability[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((capability): capability is WorkerCapability =>
+    capability === "shell"
+    || capability === "filesystem"
+    || capability === "git"
+    || capability === "npm"
+    || capability === "playwright"
+    || capability === "browser"
+    || capability === "seo_audit"
+    || capability === "memory"
+    || capability === "scheduler"
+    || capability === "tool"
+    || capability === "command"
+    || capability === "file:read"
+    || capability === "file:write"
+    || capability === "file:edit"
+  );
+}
+
+function requireWorkerApiKey(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const auth = isWorkerRequestAuthorized(req.headers);
+  if (auth.ok) {
+    if (auth.devFallback) {
+      logWorkerEvent("worker.auth.dev_fallback", { path: req.path, result: "allowed" });
+    }
+    return next();
+  }
+  logWorkerEvent("worker.auth.fail", { path: req.path, result: "fail" });
+  return res.status(401).json(unauthorizedWorkerResponse());
+}
+
+function inferVerifiedCapabilities(input: {
+  requested: WorkerCapability[];
+  selfCheck?: unknown;
+}) {
+  const selfCheck = input.selfCheck && typeof input.selfCheck === "object"
+    ? input.selfCheck as Record<string, unknown>
+    : {};
+
+  return input.requested.filter((capability) => {
+    if ((capability === "shell" || capability === "command") && selfCheck.shell === false) return false;
+    if ((capability === "filesystem" || capability.startsWith("file:")) && selfCheck.filesystem === false) return false;
+    if ((capability === "playwright" || capability === "browser") && selfCheck.playwright === false) return false;
+    return true;
+  });
+}
+
+function getWorkerAuthMode() {
+  return process.env.WORKER_API_KEY || process.env.BIZBOT_WORKER_API_KEY ? "api-key" : "dev-fallback";
+}
+
+function getWorkerDiagnostics(workerId?: string) {
+  const workers = workerRegistry.list()
+    .filter((worker) => !workerId || worker.id === workerId)
+    .map((worker) => {
+      const lastHeartbeatMs = new Date(worker.lastHeartbeatAt || worker.lastHeartbeat).getTime();
+      return {
+        id: worker.id,
+        name: worker.name,
+        platform: worker.platform,
+        status: worker.status,
+        online: worker.status === "online" || worker.status === "busy",
+        capabilities: worker.capabilities,
+        verifiedCapabilities: worker.verifiedCapabilities || worker.capabilities,
+        lastHeartbeat: worker.lastHeartbeat,
+        lastHeartbeatAt: worker.lastHeartbeatAt,
+        lastHeartbeatAgeMs: Number.isFinite(lastHeartbeatMs) ? Date.now() - lastHeartbeatMs : null,
+        failedTaskCount: worker.failedTasksCount || 0,
+        currentTask: worker.currentTask,
+        currentTaskId: worker.currentTaskId,
+        authMode: getWorkerAuthMode(),
+        endpoint: worker.endpoint,
+        host: worker.host,
+        recentExecutionSummary: executionDiagnostics.byWorker(worker.id, 5),
+      };
+    });
+
+  return workers;
+}
+
+function getServerDiagnostics() {
+  const workers = getWorkerDiagnostics();
+  return {
+    storageMode: process.env.BIZBOT_STORAGE_MODE || "local-json",
+    workerAuthMode: getWorkerAuthMode(),
+    heartbeatTtlMs: WORKER_HEARTBEAT_TTL_MS,
+    executionTimeouts: {
+      localCommandMs: 60_000,
+      remoteWorkerMs: Number(process.env.REMOTE_WORKER_TIMEOUT_MS || 60_000),
+      browserActionMs: BROWSER_ACTION_TIMEOUT_MS,
+    },
+    onlineWorkers: workers.filter((worker) => worker.online),
+    pendingApprovals: readApprovals().filter((approval) => approval.status === "pending").length,
+    recentExecutionFailures: executionDiagnostics.failures(10),
+  };
+}
+
 async function startServer() {
   console.log("Starting Aegis Command Center (Node API)...");
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_MAX_BYTES } });
 
   app.use(express.json({ limit: '100mb' }));
@@ -2329,65 +2508,279 @@ async function startServer() {
   app.post("/api/relay/exec", async (req, res) => {
     const { command, workdir } = req.body;
     try {
-      const { executable, args } = validateRelayCommand(String(command || ""));
-      const cwd = resolveRelayPath(typeof workdir === "string" && workdir.trim() ? workdir : process.cwd());
-
-      execFile(executable, args, { cwd, timeout: 60_000 }, (error, stdout, stderr) => {
-        res.json({
-          stdout: stdout || "",
-          stderr: stderr || "",
-          exitCode: typeof error?.code === "number" ? error.code : 0,
-          signal: error?.signal || null,
-        });
+      const result = await executionRouter.execute({
+        kind: "command",
+        command: String(command || ""),
+        workdir: typeof workdir === "string" ? workdir : undefined,
       });
+      res.status(result.ok ? 200 : 400).json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown exec error.";
-      res.status(400).json({ error: message });
+      res.status(400).json(executionError({ error: message, type: "execution", executor: "unavailable" }));
+    }
+  });
+
+  /** Capability-routed execution entry point for local or remote workers. */
+  app.post("/api/relay/execute", async (req, res) => {
+    try {
+      const result = await executionRouter.execute(req.body as ExecutionRequest);
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown execution routing error.";
+      res.status(400).json(executionError({ error: message, type: "execution", executor: "unavailable" }));
     }
   });
 
   /** Read a file. */
-  app.get("/api/relay/read", (req, res) => {
+  app.get("/api/relay/read", async (req, res) => {
     const filePath = req.query.path as string;
-    if (!filePath) return res.status(400).json({ error: "No path provided." });
+    if (!filePath) return res.status(400).json(executionError({ error: "No path provided.", type: "validation", executor: "unavailable" }));
     try {
-      const content = fs.readFileSync(resolveRelayPath(filePath), "utf8");
-      res.json({ content });
+      const result = await executionRouter.execute({
+        kind: "file.read",
+        path: filePath,
+      });
+      res.status(result.ok ? 200 : 500).json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown read error.";
-      res.status(500).json({ error: message });
+      res.status(500).json(executionError({ error: message, type: "execution", executor: "unavailable" }));
     }
   });
 
   /** Write a file. */
-  app.post("/api/relay/write", (req, res) => {
+  app.post("/api/relay/write", async (req, res) => {
     const { path: filePath, content } = req.body;
-    if (!filePath || content === undefined) return res.status(400).json({ error: "Missing path or content." });
+    if (!filePath || content === undefined) return res.status(400).json(executionError({ error: "Missing path or content.", type: "validation", executor: "unavailable" }));
     try {
-      fs.writeFileSync(resolveRelayPath(String(filePath)), String(content), "utf8");
-      res.json({ success: true });
+      const result = await executionRouter.execute({
+        kind: "file.write",
+        path: String(filePath),
+        content: String(content),
+      });
+      res.status(result.ok ? 200 : 500).json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown write error.";
-      res.status(500).json({ error: message });
+      res.status(500).json(executionError({ error: message, type: "execution", executor: "unavailable" }));
     }
   });
 
   /** Edit a file (Search & Replace). */
-  app.post("/api/relay/edit", (req, res) => {
+  app.post("/api/relay/edit", async (req, res) => {
     const { path: filePath, oldString, newString } = req.body;
-    if (!filePath || !oldString || newString === undefined) return res.status(400).json({ error: "Missing required fields." });
+    if (!filePath || !oldString || newString === undefined) return res.status(400).json(executionError({ error: "Missing required fields.", type: "validation", executor: "unavailable" }));
     try {
-      const fullPath = resolveRelayPath(String(filePath));
-      let content = fs.readFileSync(fullPath, "utf8");
-      if (!content.includes(oldString)) {
-        return res.status(400).json({ error: "oldString not found in file." });
-      }
-      content = content.replace(String(oldString), String(newString));
-      fs.writeFileSync(fullPath, content, "utf8");
-      res.json({ success: true });
+      const result = await executionRouter.execute({
+        kind: "file.edit",
+        path: String(filePath),
+        oldString: String(oldString),
+        newString: String(newString),
+      });
+      res.status(result.ok ? 200 : 500).json(result);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown edit error.";
-      res.status(500).json({ error: message });
+      res.status(500).json(executionError({ error: message, type: "execution", executor: "unavailable" }));
+    }
+  });
+
+  app.get("/api/workers", (_req, res) => {
+    res.json({ workers: workerRegistry.list() });
+  });
+
+  app.get("/api/workers/:id", (req, res) => {
+    const worker = workerRegistry.get(String(req.params.id || ""));
+    if (!worker) {
+      return res.status(404).json({ error: "Worker not found." });
+    }
+    res.json(worker);
+  });
+
+  app.get("/api/workers/status", (_req, res) => {
+    res.json({
+      workers: workerRegistry.list().map((worker) => ({
+        id: worker.id,
+        name: worker.name,
+        platform: worker.platform,
+        online: worker.status === "online",
+        status: worker.status,
+        lastHeartbeat: worker.lastHeartbeat,
+        lastHeartbeatAt: worker.lastHeartbeatAt,
+        capabilities: worker.capabilities,
+        currentTask: worker.currentTask,
+        currentTaskId: worker.currentTaskId,
+        failedTasksCount: worker.failedTasksCount || 0,
+      })),
+    });
+  });
+
+  app.post("/api/workers/register", requireWorkerApiKey, (req, res) => {
+    try {
+      const requestedCapabilities = normalizeWorkerCapabilities(req.body?.capabilities);
+      const worker = workerRegistry.register({
+        id: typeof req.body?.id === "string" ? req.body.id : undefined,
+        name: String(req.body?.name || ""),
+        platform: normalizeWorkerPlatform(req.body?.platform),
+        capabilities: requestedCapabilities,
+        verifiedCapabilities: inferVerifiedCapabilities({
+          requested: requestedCapabilities,
+          selfCheck: req.body?.selfCheck,
+        }),
+        endpoint: typeof req.body?.endpoint === "string" ? req.body.endpoint : undefined,
+        host: typeof req.body?.host === "string" ? req.body.host : undefined,
+        metadata: req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : undefined,
+      });
+      res.json(worker);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown worker registration error.";
+      res.status(400).json(executionError({ error: message, type: "validation", executor: "unavailable" }));
+    }
+  });
+
+  app.post("/api/workers/heartbeat", requireWorkerApiKey, (req, res) => {
+    try {
+      const worker = workerRegistry.heartbeat(
+        String(req.body?.id || ""),
+        normalizeWorkerStatus(req.body?.status),
+        typeof req.body?.currentTask === "string" ? req.body.currentTask : undefined,
+        typeof req.body?.currentTaskId === "string" ? req.body.currentTaskId : undefined,
+      );
+      res.json(worker);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown worker heartbeat error.";
+      res.status(404).json(executionError({ error: message, type: "validation", executor: "unavailable" }));
+    }
+  });
+
+  app.post("/api/workers/:id/heartbeat", requireWorkerApiKey, (req, res) => {
+    try {
+      const worker = workerRegistry.heartbeat(
+        String(req.params.id || ""),
+        normalizeWorkerStatus(req.body?.status),
+        typeof req.body?.currentTask === "string" ? req.body.currentTask : undefined,
+        typeof req.body?.currentTaskId === "string" ? req.body.currentTaskId : undefined,
+      );
+      res.json(worker);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown worker heartbeat error.";
+      res.status(404).json(executionError({ error: message, type: "validation", executor: "unavailable" }));
+    }
+  });
+
+  app.post("/api/workers/:id/run", async (req, res) => {
+    try {
+      const workerId = String(req.params.id || "");
+      const result = await executionRouter.execute({
+        ...(req.body as ExecutionRequest),
+        preferredWorkerId: workerId,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown worker run error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.get("/api/diagnostics/server", (_req, res) => {
+    res.json(getServerDiagnostics());
+  });
+
+  app.get("/api/diagnostics/workers", (_req, res) => {
+    res.json({
+      workers: getWorkerDiagnostics(),
+      recentExecutionFailures: executionDiagnostics.failures(10),
+    });
+  });
+
+  app.get("/api/diagnostics/workers/:id", (req, res) => {
+    const [worker] = getWorkerDiagnostics(String(req.params.id || ""));
+    if (!worker) {
+      return res.status(404).json(executionError({
+        error: "Worker not found.",
+        type: "validation",
+        executor: "unavailable",
+      }));
+    }
+    res.json(worker);
+  });
+
+  app.post("/api/diagnostics/test", async (req, res) => {
+    const action = String(req.body?.action || "");
+    const preferredWorkerId = typeof req.body?.workerId === "string" ? req.body.workerId : undefined;
+
+    try {
+      if (action === "ping_worker") {
+        const worker = preferredWorkerId ? workerRegistry.get(preferredWorkerId) : workerRegistry.findCompatible([]);
+        if (!worker) {
+          return res.status(404).json(executionError({
+            error: "Worker is offline or unreachable.",
+            type: "network",
+            executor: "unavailable",
+          }));
+        }
+        const result = {
+          ok: worker.status === "online" || worker.status === "busy",
+          success: worker.status === "online" || worker.status === "busy",
+          executor: "remote" as const,
+          workerId: worker.id,
+          metadata: { status: worker.status, lastHeartbeatAt: worker.lastHeartbeatAt },
+        };
+        executionDiagnostics.record({ kind: "tool", toolId: "diagnostics.ping_worker", preferredWorkerId: worker.id }, result);
+        return res.status(result.ok ? 200 : 400).json(result);
+      }
+
+      if (action === "safe_echo") {
+        const result = await executionRouter.execute({
+          kind: "command",
+          command: "node -e \"console.log('bizbot-worker-ok')\"",
+          workdir: process.cwd(),
+          preferredWorkerId,
+          requiredCapabilities: ["shell"],
+        });
+        return res.status(result.ok ? 200 : 400).json(result);
+      }
+
+      if (action === "safe_read") {
+        const result = await executionRouter.execute({
+          kind: "file.read",
+          path: path.join(process.cwd(), "package.json"),
+          preferredWorkerId,
+          requiredCapabilities: ["filesystem"],
+        });
+        return res.status(result.ok ? 200 : 400).json(result);
+      }
+
+      if (action === "capability_missing") {
+        const result = await executionRouter.execute({
+          kind: "browser.action",
+          browserAction: "diagnostics.noop",
+          preferredWorkerId,
+          requiredCapabilities: ["playwright"],
+        });
+        return res.status(result.ok ? 200 : 400).json(result);
+      }
+
+      if (action === "simulate_timeout") {
+        const result = executionError({
+          error: "Execution timed out",
+          type: "timeout",
+          executor: "unavailable",
+          workerId: preferredWorkerId,
+          durationMs: Number(process.env.REMOTE_WORKER_TIMEOUT_MS || 60_000),
+        });
+        executionDiagnostics.record({ kind: "tool", toolId: "diagnostics.simulate_timeout", preferredWorkerId }, result);
+        return res.status(408).json(result);
+      }
+
+      return res.status(400).json(executionError({
+        error: "Unknown diagnostics test action.",
+        type: "validation",
+        executor: "unavailable",
+        details: { action },
+      }));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown diagnostics test error.";
+      const result = executionError({ error: message, type: "execution", executor: "unavailable" });
+      executionDiagnostics.record({ kind: "tool", toolId: `diagnostics.${action || "unknown"}`, preferredWorkerId }, result);
+      res.status(500).json(result);
     }
   });
 
@@ -2718,10 +3111,20 @@ async function startServer() {
         return res.status(400).json({ error: validationError });
       }
 
+      const memoryContext = await readNeuralMemory(String(message || ""));
+      const enhancedSystemInstruction = [
+        systemInstruction,
+        "Neural memory is authoritative business context. If it contains relevant facts about the user, Bobby Sanderlin, Carolina Wheel Werkz, CWW, or BizBot, use those facts directly. Do not claim you have no memory when neural memory context is present.",
+        "Web research rule: do not navigate to Google, Bing, or other search result pages in the browser. Search result pages trigger captcha and stall the run. Use known direct URLs from memory, fetch_url, crawl_site, seo_audit_url, browser_read after direct navigation, or ask for the missing URL.",
+        memoryContext && memoryContext !== "No prior neural memory found."
+          ? `Current neural memory:\n${memoryContext}`
+          : "",
+      ].filter(Boolean).join("\n\n");
+
       const { genAI } = createGeminiClients();
       const model = genAI.getGenerativeModel({
         model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-        systemInstruction,
+        systemInstruction: enhancedSystemInstruction,
         tools: getModelTools(),
       });
 
@@ -2742,25 +3145,44 @@ async function startServer() {
       ];
 
       let response = (await model.generateContent({ contents })).response;
-      const initialFunctionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
       const pendingApprovals: PendingApproval[] = [];
+      const conversationContents = [...contents];
+      let serverToolRoundCount = 0;
 
-      if (initialFunctionCalls && initialFunctionCalls.length > 0) {
+      for (let toolRound = 0; toolRound < 6; toolRound += 1) {
+        const functionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
+        if (!functionCalls || functionCalls.length === 0) {
+          break;
+        }
+
         const serverToolResponses: Array<{ functionResponse: { name: string; response: unknown } }> = [];
         const clientToolCalls: ToolCall[] = [];
 
-        for (const call of initialFunctionCalls) {
-          const resolution = await resolveServerToolCall(call, {
-            email: req.userEmail,
-            role: req.userRole,
-          });
-          if (resolution.handled) {
-            serverToolResponses.push(resolution.response);
-            if (isPendingApproval(resolution.approval)) {
-              pendingApprovals.push(resolution.approval);
+        for (const call of functionCalls) {
+          try {
+            const resolution = await resolveServerToolCall(call, {
+              email: req.userEmail,
+              role: req.userRole,
+            });
+            if (resolution.handled) {
+              serverToolResponses.push(resolution.response);
+              if (isPendingApproval(resolution.approval)) {
+                pendingApprovals.push(resolution.approval);
+              }
+            } else {
+              clientToolCalls.push(call);
             }
-          } else {
-            clientToolCalls.push(call);
+          } catch (toolError) {
+            serverToolResponses.push({
+              functionResponse: {
+                name: call.name,
+                response: {
+                  ok: false,
+                  error: toolError instanceof Error ? toolError.message : "Tool execution failed.",
+                  guidance: "Continue with the sources that succeeded. If a competitor URL is missing or unreachable, say which URL is needed instead of failing the whole answer.",
+                },
+              },
+            });
           }
         }
 
@@ -2771,22 +3193,39 @@ async function startServer() {
           });
         }
 
-        if (serverToolResponses.length > 0) {
-          const secondResponse = await model.generateContent({
-            contents: [
-              ...contents,
-              { role: "model", parts: initialFunctionCalls.map((call) => ({ functionCall: call })) },
-              { role: "function", parts: serverToolResponses },
-            ],
-          } as any);
-          response = secondResponse.response;
+        if (serverToolResponses.length === 0) {
+          break;
         }
+
+        serverToolRoundCount += 1;
+        conversationContents.push(
+          { role: "model" as const, parts: functionCalls.map((call) => ({ functionCall: call })) as Part[] },
+          { role: "function" as const, parts: serverToolResponses as Part[] },
+        );
+        response = (await model.generateContent({ contents: conversationContents } as any)).response;
       }
 
       const functionCalls = typeof response.functionCalls === "function" ? (response.functionCalls() as ToolCall[] | undefined) : undefined;
+      let finalText = response.text();
+
+      if (!finalText.trim() && serverToolRoundCount > 0 && (!functionCalls || functionCalls.length === 0)) {
+        const finalResponse = await model.generateContent({
+          contents: [
+            ...conversationContents,
+            {
+              role: "user" as const,
+              parts: [{
+                text: "Produce a concise final answer for the user using the tool results above. If some URLs failed or were missing, clearly say what was unavailable and continue with the available evidence. Do not return an empty response.",
+              }],
+            },
+          ],
+        } as any);
+        response = finalResponse.response;
+        finalText = response.text();
+      }
 
       res.json({
-        text: response.text(),
+        text: finalText,
         functionCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
         pendingApprovals: pendingApprovals.length > 0 ? pendingApprovals : undefined,
       });

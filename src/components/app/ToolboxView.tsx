@@ -20,6 +20,8 @@ import {
   Video,
 } from 'lucide-react';
 import { AutonomyService, type ApprovalActionType, type AutonomyOverview, type BrowserTraceEntry, type PendingApproval, type ScheduledJobTargetType, type UserRole } from '../../services/autonomy';
+import { DiagnosticsService, type DiagnosticsTestAction, type ServerDiagnostics, type WorkersDiagnosticsResponse } from '../../services/diagnostics';
+import { formatExecutionError } from '../../lib/formatExecutionError';
 import { Badge, Button, Card, cn } from './ui';
 
 type ToolboxViewProps = {
@@ -84,6 +86,25 @@ const initialOverview: AutonomyOverview = {
   },
 };
 
+const initialServerDiagnostics: ServerDiagnostics = {
+  storageMode: 'local-json',
+  workerAuthMode: 'dev-fallback',
+  heartbeatTtlMs: 0,
+  executionTimeouts: {
+    localCommandMs: 0,
+    remoteWorkerMs: 0,
+    browserActionMs: 0,
+  },
+  onlineWorkers: [],
+  pendingApprovals: 0,
+  recentExecutionFailures: [],
+};
+
+const initialWorkersDiagnostics: WorkersDiagnosticsResponse = {
+  workers: [],
+  recentExecutionFailures: [],
+};
+
 function formatRoleLabel(role: UserRole) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
@@ -135,10 +156,23 @@ function formatApprovalPayload(payload: Record<string, unknown>) {
     .join('\n');
 }
 
+function formatAge(milliseconds: number | null) {
+  if (milliseconds === null) return 'Unknown';
+  if (milliseconds < 1000) return 'Just now';
+  const seconds = Math.round(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
+
 export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
   const [overview, setOverview] = useState<AutonomyOverview>(initialOverview);
+  const [serverDiagnostics, setServerDiagnostics] = useState<ServerDiagnostics>(initialServerDiagnostics);
+  const [workersDiagnostics, setWorkersDiagnostics] = useState<WorkersDiagnosticsResponse>(initialWorkersDiagnostics);
   const [isLoadingOverview, setIsLoadingOverview] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [runningDiagnosticAction, setRunningDiagnosticAction] = useState<string | null>(null);
   const [actionState, setActionState] = useState<ActionState | null>(null);
   const [selectedOutput, setSelectedOutput] = useState<string>('');
   const [isSelfHealing, setIsSelfHealing] = useState(false);
@@ -210,6 +244,14 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     () => overview.jobRuns.slice(0, 8),
     [overview.jobRuns]
   );
+  const onlineWorkers = useMemo(
+    () => workersDiagnostics.workers.filter((worker) => worker.online),
+    [workersDiagnostics.workers]
+  );
+  const offlineWorkers = useMemo(
+    () => workersDiagnostics.workers.filter((worker) => !worker.online),
+    [workersDiagnostics.workers]
+  );
 
   const refreshOverview = async (silent = false) => {
     try {
@@ -218,8 +260,14 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       } else {
         setIsLoadingOverview(true);
       }
-      const data = await AutonomyService.getOverview();
+      const [data, serverData, workersData] = await Promise.all([
+        AutonomyService.getOverview(),
+        DiagnosticsService.getServer(),
+        DiagnosticsService.getWorkers(),
+      ]);
       setOverview(data);
+      setServerDiagnostics(serverData);
+      setWorkersDiagnostics(workersData);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load autonomy overview.';
       setActionState({
@@ -231,6 +279,31 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     } finally {
       setIsLoadingOverview(false);
       setIsRefreshing(false);
+    }
+  };
+
+  const handleDiagnosticTest = async (action: DiagnosticsTestAction, workerId?: string) => {
+    const actionKey = `${action}:${workerId || 'auto'}`;
+    try {
+      setRunningDiagnosticAction(actionKey);
+      const result = await DiagnosticsService.runTest(action, workerId);
+      const readable = result.ok
+        ? result.stdout?.trim() || result.content?.slice(0, 240) || JSON.stringify(result.metadata || {}, null, 2)
+        : formatExecutionError(result);
+      setSelectedOutput(readable || 'Diagnostic action completed without output.');
+      setActionState({
+        kind: result.ok ? 'success' : 'error',
+        title: `Diagnostic ${action.split('_').join(' ')}`,
+        detail: readable || 'No diagnostic output returned.',
+      });
+      onLog?.(`Diagnostic ${action} ${result.ok ? 'passed' : 'failed'}`, result.ok ? 'success' : 'warn');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Diagnostic action failed.';
+      setActionState({ kind: 'error', title: 'Diagnostic failed', detail: message });
+      onLog?.(`Diagnostic ${action} failed: ${message}`, 'warn');
+    } finally {
+      setRunningDiagnosticAction(null);
     }
   };
 
@@ -576,6 +649,135 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             </div>
           </Card>
         )}
+
+        <Card className="p-6 lg:p-8 space-y-6 border-cyber-blue/10 bg-cyber-blue/[0.03]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight">Worker Diagnostics</h3>
+              <p className="text-sm text-zinc-500 mt-2">Confirm the main server and worker nodes are healthy before asking them to run shell, files, or browser automation.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge color={serverDiagnostics.workerAuthMode === 'api-key' ? 'lime' : 'gold'}>
+                Auth: {serverDiagnostics.workerAuthMode}
+              </Badge>
+              <Badge color="blue">{onlineWorkers.length} online</Badge>
+              <Badge color={offlineWorkers.length > 0 ? 'rose' : 'lime'}>{offlineWorkers.length} offline</Badge>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Storage Mode</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">{serverDiagnostics.storageMode}</div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Heartbeat TTL</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">{serverDiagnostics.heartbeatTtlMs || 0} ms</div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Remote Timeout</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">{serverDiagnostics.executionTimeouts.remoteWorkerMs || 0} ms</div>
+            </Card>
+            <Card className="p-5 border-white/10 bg-black/20">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Pending Approvals</div>
+              <div className="mt-2 text-sm text-zinc-200 font-semibold">{serverDiagnostics.pendingApprovals}</div>
+            </Card>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            {([
+              ['ping_worker', 'Ping Worker'],
+              ['safe_echo', 'Safe Echo'],
+              ['safe_read', 'Read Safe File'],
+              ['capability_missing', 'Missing Capability'],
+              ['simulate_timeout', 'Simulate Timeout'],
+            ] as Array<[DiagnosticsTestAction, string]>).map(([action, label]) => (
+              <Button
+                key={action}
+                variant={action === 'simulate_timeout' || action === 'capability_missing' ? 'secondary' : 'primary'}
+                loading={runningDiagnosticAction === `${action}:auto`}
+                onClick={() => void handleDiagnosticTest(action)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+
+          <div className="grid gap-4">
+            {workersDiagnostics.workers.map((worker) => (
+              <Card key={worker.id} className="p-5 border-white/10 bg-black/20">
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <Badge color={worker.online ? 'lime' : 'rose'}>{worker.status}</Badge>
+                        <span className="text-lg font-black text-white">{worker.name}</span>
+                        <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">{worker.platform}</span>
+                      </div>
+                      <div className="text-sm text-zinc-400">
+                        {worker.id} · last heartbeat {formatAge(worker.lastHeartbeatAgeMs)} · failed tasks {worker.failedTaskCount}
+                      </div>
+                      <div className="text-sm text-zinc-400">
+                        Current task: <span className="text-zinc-200">{worker.currentTask || 'Idle'}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        loading={runningDiagnosticAction === `ping_worker:${worker.id}`}
+                        onClick={() => void handleDiagnosticTest('ping_worker', worker.id)}
+                      >
+                        Ping
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        loading={runningDiagnosticAction === `safe_echo:${worker.id}`}
+                        onClick={() => void handleDiagnosticTest('safe_echo', worker.id)}
+                      >
+                        Echo
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(worker.verifiedCapabilities.length > 0 ? worker.verifiedCapabilities : worker.capabilities).map((capability) => (
+                      <span key={capability} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-zinc-300">
+                        {capability}
+                      </span>
+                    ))}
+                  </div>
+                  {worker.recentExecutionSummary.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Recent Executions</div>
+                      {worker.recentExecutionSummary.slice(0, 3).map((entry) => (
+                        <div key={entry.id} className="rounded-2xl border border-white/5 bg-white/5 px-3 py-2 text-xs text-zinc-300">
+                          <span className={entry.success ? 'text-cyber-lime' : 'text-cyber-rose'}>
+                            {entry.success ? 'OK' : 'FAIL'}
+                          </span>
+                          {' '}· {entry.action} · {new Date(entry.timestamp).toLocaleTimeString()} · {entry.summary}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+            {!isLoadingOverview && workersDiagnostics.workers.length === 0 && (
+              <div className="text-sm text-zinc-500">No remote workers are registered yet. Local-first execution still works on this Mac, and workers will appear here after running `npm run worker`.</div>
+            )}
+          </div>
+
+          {workersDiagnostics.recentExecutionFailures.length > 0 && (
+            <div className="space-y-3">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500 font-black">Recent Failures</div>
+              {workersDiagnostics.recentExecutionFailures.slice(0, 5).map((failure) => (
+                <div key={failure.id} className="rounded-2xl border border-cyber-rose/10 bg-cyber-rose/5 px-4 py-3 text-sm text-zinc-300">
+                  <span className="text-cyber-rose font-black">{failure.type || 'execution'}</span>
+                  {' '}· {failure.action} · {failure.workerId || failure.executor} · {failure.summary}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
 
         <Card className="p-6 lg:p-8 space-y-6 border-white/10 bg-white/[0.02]">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

@@ -1,4 +1,5 @@
 import { authHeaderObject } from '../lib/authHeaders';
+import { apiUrl } from '../lib/apiBase';
 
 export interface Agent {
   id: string;
@@ -19,7 +20,7 @@ export const AGENTS: Agent[] = [
     role: "Orchestration Lead",
     description: "Autonomous Lead that can search the web, access neural memory, and orchestrate other agents.",
     autonomous: true,
-    systemInstruction: "You are the central intelligence of BizBot AI. Your purpose is to analyze user prompts and determine which specialized agent(s) should handle the task. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for real-time market data, technical research, and news). 2. NEURAL MEMORY (use 'get_neural_memory' and 'update_neural_memory' to remember and recall facts about the business). You don't just answer; you orchestrate. You act as the entry point for complex workflows and provide a 'Relay' between the user and the system.",
+    systemInstruction: "You are the central intelligence of BizBot AI. Your purpose is to analyze user prompts and determine which specialized agent(s) should handle the task. You are an AUTONOMOUS agent with access to webpage fetching, browser reading, SEO/crawl tools, and neural memory. Use direct URLs and known websites for research. Do not use Google Search result pages as a browser destination because they trigger captcha. Use neural memory, direct fetch_url/crawl_site/seo_audit_url, or ask for the missing URL when needed. You don't just answer; you orchestrate. You act as the entry point for complex workflows and provide a Relay between the user and the system.",
     icon: "Compass",
     color: "bg-rose-600",
     suggestedPrompts: [
@@ -291,7 +292,7 @@ export const AGENTS: Agent[] = [
     role: "Technical Implementation",
     description: "Expert implementation agent with autonomous coding, search, and memory capabilities.",
     autonomous: true,
-    systemInstruction: "You are the System Coder for CWW Ventures. You provide high-quality, executable code in TypeScript, React, and Node.js. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for documentation, libraries, and API specs). 2. NEURAL MEMORY (use it to store and recall technical details about the Aegis codebase). You help implement features, debug complex issues, and write clean, efficient code for the dashboard. Provide complete, documented solutions.",
+    systemInstruction: "You are the System Coder for CWW Ventures. You provide high-quality, executable code in TypeScript, React, and Node.js. You are an AUTONOMOUS agent with access to direct webpage fetching, browser reading, local relay tools, and neural memory. Use direct documentation URLs when browsing; do not use Google Search result pages because they trigger captcha. You help implement features, debug complex issues, and write clean, efficient code for the dashboard. Provide complete, documented solutions.",
     icon: "Code",
     color: "bg-emerald-600",
     suggestedPrompts: [
@@ -307,7 +308,7 @@ export const AGENTS: Agent[] = [
     role: "Quality Assurance",
     description: "Tests features, identifies bugs, and verifies system stability.",
     autonomous: true,
-    systemInstruction: "You are the QA Agent for BizBot AI. Your goal is to ensure the system is stable and bug-free. You test new features, perform regression testing, and identify edge cases that could cause the 'AI failed' error. You are an AUTONOMOUS agent with access to: 1. GOOGLE SEARCH (use it for research on Gemini API errors and best practices). 2. NEURAL MEMORY (use it to log and recall system failures). When a failure occurs, you analyze the logs and provide a detailed report on the cause and recommended fix.",
+    systemInstruction: "You are the QA Agent for BizBot AI. Your goal is to ensure the system is stable and bug-free. You test new features, perform regression testing, and identify edge cases that could cause the AI failed error. You are an AUTONOMOUS agent with access to direct webpage fetching, browser reading, diagnostics, and neural memory. Do not use Google Search result pages because they trigger captcha. When a failure occurs, you analyze the logs and provide a detailed report on the cause and recommended fix.",
     icon: "ShieldAlert",
     color: "bg-amber-600",
     suggestedPrompts: [
@@ -357,6 +358,7 @@ const AUTONOMOUS_AGENT_APPENDIX = `
 Autonomy mode is enabled for this agent.
 - Plan before answering and take the initiative to complete the user's task end to end.
 - Use available tools when they materially improve the result.
+- For web research, prefer known direct URLs, fetch_url, crawl_site, seo_audit_url, and browser_read. Do not navigate to Google/Bing search result pages; they often trigger captcha and stall the run.
 - If a tool is not available in this run, do not claim to have used it.
 - Prefer producing a finished artifact, recommendation, draft, or action plan rather than asking the user to do the next obvious step.
 - When useful, store durable facts or retrieve prior facts through neural memory.
@@ -394,7 +396,7 @@ export async function chatWithAgent(
   toolResults?: any[]
 ): Promise<any> {
   const authHeaders = await authHeaderObject();
-  const response = await fetch("/api/chat", {
+  const response = await fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -423,7 +425,7 @@ export async function chatWithAgent(
 export const RelayBridge = {
   async exec(command: string, workdir?: string) {
     const authHeaders = await authHeaderObject();
-    const res = await fetch("http://localhost:3000/api/relay/exec", {
+    const res = await fetch(apiUrl("/api/relay/exec"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ command, workdir }),
@@ -433,7 +435,7 @@ export const RelayBridge = {
 
   async read_file(path: string) {
     const authHeaders = await authHeaderObject();
-    const res = await fetch(`http://localhost:3000/api/relay/read?path=${encodeURIComponent(path)}`, {
+    const res = await fetch(apiUrl(`/api/relay/read?path=${encodeURIComponent(path)}`), {
       headers: authHeaders,
     });
     return parseApiResponse(res);
@@ -441,7 +443,7 @@ export const RelayBridge = {
 
   async write_file(path: string, content: string) {
     const authHeaders = await authHeaderObject();
-    const res = await fetch("http://localhost:3000/api/relay/write", {
+    const res = await fetch(apiUrl("/api/relay/write"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, content }),
@@ -451,7 +453,7 @@ export const RelayBridge = {
 
   async edit_file(path: string, oldString: string, newString: string) {
     const authHeaders = await authHeaderObject();
-    const res = await fetch("http://localhost:3000/api/relay/edit", {
+    const res = await fetch(apiUrl("/api/relay/edit"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ path, oldString, newString }),

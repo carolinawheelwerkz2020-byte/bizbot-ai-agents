@@ -7,9 +7,10 @@ import { AgentAvatar, Badge, Button, Card } from './ui';
 
 type WorkflowsViewProps = {
   executeWorkflow: (workflow: WorkflowShape) => Promise<void>;
+  onArchitectWorkflow: () => void;
 };
 
-export function WorkflowsView({ executeWorkflow }: WorkflowsViewProps) {
+export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: WorkflowsViewProps) {
   return (
     <motion.div
       key="workflows"
@@ -32,7 +33,12 @@ export function WorkflowsView({ executeWorkflow }: WorkflowsViewProps) {
               Chain specialized agents into powerful automated sequences to achieve complex business outcomes.
             </p>
           </div>
-          <Button variant="secondary" className="!py-5 !px-10 !text-[11px] border-cyber-lime/20 text-cyber-lime hover:bg-cyber-lime hover:text-void" icon={Plus}>
+          <Button
+            variant="secondary"
+            className="!py-5 !px-10 !text-[11px] border-cyber-lime/20 text-cyber-lime hover:bg-cyber-lime hover:text-void"
+            icon={Plus}
+            onClick={onArchitectWorkflow}
+          >
             Architect Workflow
           </Button>
         </div>

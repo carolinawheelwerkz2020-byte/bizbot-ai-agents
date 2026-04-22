@@ -4,11 +4,10 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  BookOpen,
   Cpu,
   GitBranch,
-  Info,
   Layers,
-  LogOut,
   Minimize2,
   Settings,
   X,
@@ -167,16 +166,25 @@ export function Sidebar({
                   <div className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Admin Access</div>
                 </div>
               </div>
-              <button className="p-2 text-zinc-600 hover:text-cyber-rose transition-all">
-                <LogOut size={16} />
-              </button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button className="flex items-center justify-center gap-2 py-2 bg-white/5 rounded-lg text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-all">
+              <button
+                onClick={() => {
+                  setActiveView('toolbox');
+                  setIsMobileMenuOpen(false);
+                }}
+                className="flex items-center justify-center gap-2 py-2 bg-white/5 rounded-lg text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-all"
+              >
                 <Settings size={12} /> Config
               </button>
-              <button className="flex items-center justify-center gap-2 py-2 bg-white/5 rounded-lg text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-all">
-                <Info size={12} /> Docs
+              <button
+                onClick={() => {
+                  setActiveView('docs');
+                  setIsMobileMenuOpen(false);
+                }}
+                className="flex items-center justify-center gap-2 py-2 bg-white/5 rounded-lg text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-all"
+              >
+                <BookOpen size={12} /> Docs
               </button>
             </div>
           </div>
