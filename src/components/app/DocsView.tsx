@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { BookOpen, Cpu, GitBranch, Layers, Monitor, ShieldCheck } from 'lucide-react';
+import { BookOpen, Cpu, GitBranch, Layers, LayoutDashboard, Mail, Monitor, ShieldCheck } from 'lucide-react';
+import { CWW_BUSINESS_CONTEXT } from '../../lib/businessContext';
 import { Badge, Card } from './ui';
 
 export function DocsView() {
@@ -27,6 +28,18 @@ export function DocsView() {
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
+          <Card className="p-7 space-y-4 md:col-span-2">
+            <LayoutDashboard className="text-cyber-blue" />
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-xl font-black">CWW Dashboard Automation</h3>
+              <Badge color="blue">{CWW_BUSINESS_CONTEXT.firebaseProjectId}</Badge>
+            </div>
+            <p className="text-sm text-zinc-500 leading-relaxed">
+              Use Dashboard Ops, Service Advisor, and Growth Operator to plan work around leads, jobs, customers, follow-ups,
+              reporting, SEO, and reviews. The live dashboard is {CWW_BUSINESS_CONTEXT.dashboardUrl}.
+            </p>
+          </Card>
+
           <Card className="p-7 space-y-4">
             <Cpu className="text-cyber-blue" />
             <h3 className="text-xl font-black">Directives</h3>
@@ -56,6 +69,15 @@ export function DocsView() {
             <h3 className="text-xl font-black">Auxiliary / Config</h3>
             <p className="text-sm text-zinc-500 leading-relaxed">
               Operational control center for approvals, registered tools, schedules, browser traces, relay policy, and worker status.
+            </p>
+          </Card>
+
+          <Card className="p-7 space-y-4">
+            <Mail className="text-cyber-rose" />
+            <h3 className="text-xl font-black">Email Estimate Scanner</h3>
+            <p className="text-sm text-zinc-500 leading-relaxed">
+              Read-only Gmail integration for finding estimate and quote requests. It drafts lead summaries and reply suggestions,
+              but does not send or modify email without approval.
             </p>
           </Card>
 

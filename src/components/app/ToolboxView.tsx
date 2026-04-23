@@ -9,6 +9,7 @@ import {
   Gauge,
   Layers,
   LayoutDashboard,
+  Mail,
   PackagePlus,
   Play,
   RefreshCcw,
@@ -21,7 +22,9 @@ import {
 } from 'lucide-react';
 import { AutonomyService, type ApprovalActionType, type AutonomyOverview, type BrowserTraceEntry, type PendingApproval, type ScheduledJobTargetType, type UserRole } from '../../services/autonomy';
 import { DiagnosticsService, type DiagnosticsTestAction, type ServerDiagnostics, type WorkersDiagnosticsResponse } from '../../services/diagnostics';
+import { EstimateScannerService, type EstimateScannerStatus, type EstimateScanRun } from '../../services/estimateScanner';
 import { formatExecutionError } from '../../lib/formatExecutionError';
+import { CWW_BUSINESS_CONTEXT } from '../../lib/businessContext';
 import { Badge, Button, Card, cn } from './ui';
 
 type ToolboxViewProps = {
@@ -36,7 +39,7 @@ type ActionState = {
 };
 
 const toolboxCards = [
-  { id: 'dashboard', name: 'Shop Dashboard', desc: 'Multi-tenant CRM & pipeline management.', icon: LayoutDashboard, color: 'bg-cyber-blue' },
+  { id: 'dashboard', name: 'CWW Dashboard', desc: 'Open the operating workflow for leads, jobs, follow-ups, and reporting.', icon: LayoutDashboard, color: 'bg-cyber-blue' },
   { id: 'analytics', name: 'Market Intelligence', desc: 'Deep data insights and trend analysis.', icon: BarChart3, color: 'bg-indigo-500' },
   { id: 'knowledge', name: 'Brain Sync', desc: 'Centralized institutional memory and SOPs.', icon: Layers, color: 'bg-stone-500' },
   { id: 'social', name: 'Content Engine', desc: 'Cross-platform viral content generation.', icon: Share2, color: 'bg-cyber-rose' },
@@ -105,6 +108,14 @@ const initialWorkersDiagnostics: WorkersDiagnosticsResponse = {
   recentExecutionFailures: [],
 };
 
+const initialEstimateScannerStatus: EstimateScannerStatus = {
+  configured: false,
+  authMode: 'not-configured',
+  scope: 'https://www.googleapis.com/auth/gmail.readonly',
+  recentRuns: [],
+  setupSteps: [],
+};
+
 function formatRoleLabel(role: UserRole) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
@@ -170,9 +181,12 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
   const [overview, setOverview] = useState<AutonomyOverview>(initialOverview);
   const [serverDiagnostics, setServerDiagnostics] = useState<ServerDiagnostics>(initialServerDiagnostics);
   const [workersDiagnostics, setWorkersDiagnostics] = useState<WorkersDiagnosticsResponse>(initialWorkersDiagnostics);
+  const [estimateScannerStatus, setEstimateScannerStatus] = useState<EstimateScannerStatus>(initialEstimateScannerStatus);
+  const [estimateScanRun, setEstimateScanRun] = useState<EstimateScanRun | null>(null);
   const [isLoadingOverview, setIsLoadingOverview] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [runningDiagnosticAction, setRunningDiagnosticAction] = useState<string | null>(null);
+  const [isRunningEstimateScan, setIsRunningEstimateScan] = useState(false);
   const [actionState, setActionState] = useState<ActionState | null>(null);
   const [selectedOutput, setSelectedOutput] = useState<string>('');
   const [isSelfHealing, setIsSelfHealing] = useState(false);
@@ -236,6 +250,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
     () => overview.browser.recentTrace.slice(0, 6),
     [overview.browser.recentTrace]
   );
+  const latestEstimateRun = estimateScanRun || estimateScannerStatus.recentRuns[0] || null;
   const cloudMode = useMemo(
     () => overview.relay.allowedCommands.length === 0 && overview.relay.allowedRoots.length === 0,
     [overview.relay.allowedCommands.length, overview.relay.allowedRoots.length]
@@ -260,14 +275,16 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       } else {
         setIsLoadingOverview(true);
       }
-      const [data, serverData, workersData] = await Promise.all([
+      const [data, serverData, workersData, estimateStatus] = await Promise.all([
         AutonomyService.getOverview(),
         DiagnosticsService.getServer(),
         DiagnosticsService.getWorkers(),
+        EstimateScannerService.getStatus(),
       ]);
       setOverview(data);
       setServerDiagnostics(serverData);
       setWorkersDiagnostics(workersData);
+      setEstimateScannerStatus(estimateStatus);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load autonomy overview.';
       setActionState({
@@ -304,6 +321,28 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       onLog?.(`Diagnostic ${action} failed: ${message}`, 'warn');
     } finally {
       setRunningDiagnosticAction(null);
+    }
+  };
+
+  const handleRunEstimateScan = async () => {
+    try {
+      setIsRunningEstimateScan(true);
+      const result = await EstimateScannerService.run({ lookbackDays: 2, maxResults: 20 });
+      setEstimateScanRun(result);
+      setSelectedOutput(JSON.stringify(result, null, 2));
+      setActionState({
+        kind: result.configured ? 'success' : 'error',
+        title: result.configured ? 'Estimate scan complete' : 'Gmail scanner needs setup',
+        detail: result.summary,
+      });
+      onLog?.(result.summary, result.configured ? 'success' : 'warn');
+      await refreshOverview(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to run estimate scan.';
+      setActionState({ kind: 'error', title: 'Estimate scan failed', detail: message });
+      onLog?.(`Estimate scan failed: ${message}`, 'warn');
+    } finally {
+      setIsRunningEstimateScan(false);
     }
   };
 
@@ -484,7 +523,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
       const result = await AutonomyService.createSchedule({
         name: scheduleForm.name,
         targetType: scheduleForm.targetType,
-        targetId: scheduleForm.targetType === 'self_heal' ? undefined : scheduleForm.targetId,
+        targetId: scheduleForm.targetType === 'self_heal' || scheduleForm.targetType === 'estimate_scan' ? undefined : scheduleForm.targetId,
         intervalMinutes: scheduleForm.intervalMinutes,
       });
       setScheduleForm({
@@ -1036,6 +1075,81 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <Card className="p-6 space-y-5 border-cyber-rose/20 hover:border-cyber-rose transition-all group md:col-span-3">
+                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="flex gap-4">
+                      <div className="w-14 h-14 bg-cyber-rose/10 rounded-2xl flex items-center justify-center text-cyber-rose group-hover:glow-blue transition-all">
+                        <Mail size={28} />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4 className="text-lg font-black tracking-tight">Email Estimate Scanner</h4>
+                          <Badge color={estimateScannerStatus.configured ? 'lime' : 'gold'}>
+                            {estimateScannerStatus.configured ? 'Gmail connected' : 'Needs Gmail OAuth'}
+                          </Badge>
+                        </div>
+                        <p className="text-zinc-500 text-sm font-medium max-w-3xl">
+                          Scans Gmail read-only for customers asking for quotes, wheel repair estimates, powder coating pricing,
+                          curb rash repairs, and appointment requests. It creates dashboard-ready lead fields and draft replies without sending anything.
+                        </p>
+                        {latestEstimateRun && (
+                          <p className="text-xs text-zinc-500">
+                            Last scan: {new Date(latestEstimateRun.ranAt).toLocaleString()} - {latestEstimateRun.summary}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <Button variant="secondary" onClick={() => {
+                        setScheduleForm({
+                          name: 'Daily estimate lead scanner',
+                          targetType: 'estimate_scan',
+                          targetId: '',
+                          intervalMinutes: 1440,
+                        });
+                        setActionState({
+                          kind: 'success',
+                          title: 'Schedule prepared',
+                          detail: 'Review the Background Jobs form below, then click Create Background Job.',
+                        });
+                      }}>
+                        Prepare Daily Schedule
+                      </Button>
+                      <Button variant="primary" loading={isRunningEstimateScan} onClick={() => void handleRunEstimateScan()}>
+                        Run Scan Now
+                      </Button>
+                    </div>
+                  </div>
+                  {!estimateScannerStatus.configured && estimateScannerStatus.setupSteps.length > 0 && (
+                    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                      <div className="mb-3 text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500">Setup Required</div>
+                      <div className="grid gap-2 text-sm text-zinc-400 md:grid-cols-2">
+                        {estimateScannerStatus.setupSteps.map((step) => (
+                          <div key={step} className="flex gap-2">
+                            <span className="text-cyber-rose">•</span>
+                            <span>{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {latestEstimateRun?.leads && latestEstimateRun.leads.length > 0 && (
+                    <div className="grid gap-3">
+                      {latestEstimateRun.leads.slice(0, 3).map((lead) => (
+                        <div key={lead.messageId} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge color={lead.status === 'hot_estimate_lead' ? 'lime' : lead.status === 'needs_reply' ? 'blue' : 'gold'}>
+                              {lead.status.split('_').join(' ')}
+                            </Badge>
+                            <span className="text-sm font-black">{lead.subject}</span>
+                          </div>
+                          <p className="mt-2 text-xs text-zinc-500">{lead.sender} - {lead.requestedService} - {lead.recommendedNextAction}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+
                 <Card className="p-6 space-y-5 border-cyber-lime/20 hover:border-cyber-lime transition-all group">
                   <div className="w-14 h-14 bg-cyber-lime/10 rounded-2xl flex items-center justify-center text-cyber-lime group-hover:glow-blue transition-all">
                     <Sparkles size={28} />
@@ -1088,6 +1202,11 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                     </div>
                     <h4 className="text-sm font-black tracking-tight mb-2">{tool.name}</h4>
                     <p className="text-[11px] text-zinc-500 leading-relaxed">{tool.desc}</p>
+                    {tool.id === 'dashboard' && (
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.14em] text-cyber-blue">
+                        {CWW_BUSINESS_CONTEXT.firebaseProjectId}
+                      </div>
+                    )}
                   </button>
                 ))}
               </div>
@@ -1345,6 +1464,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                     <option value="tool">Registered Tool</option>
                     <option value="recipe">Healing Recipe</option>
                     <option value="self_heal">Self-Heal Routine</option>
+                    <option value="estimate_scan">Email Estimate Scanner</option>
                   </select>
                 </label>
                 <label className="space-y-2">
@@ -1352,11 +1472,11 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
                   <select
                     value={scheduleForm.targetId}
                     onChange={(event) => setScheduleForm((prev) => ({ ...prev, targetId: event.target.value }))}
-                    disabled={scheduleForm.targetType === 'self_heal'}
+                    disabled={scheduleForm.targetType === 'self_heal' || scheduleForm.targetType === 'estimate_scan'}
                     className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-cyber-blue/40 disabled:opacity-50"
                   >
-                    <option value="">{scheduleForm.targetType === 'self_heal' ? 'Not required for self-heal' : 'Select a target'}</option>
-                    {(scheduleForm.targetType === 'tool' ? overview.registeredTools : overview.healingRecipes).map((entry) => (
+                    <option value="">{scheduleForm.targetType === 'self_heal' || scheduleForm.targetType === 'estimate_scan' ? 'Not required for this target' : 'Select a target'}</option>
+                    {(scheduleForm.targetType === 'tool' ? overview.registeredTools : scheduleForm.targetType === 'recipe' ? overview.healingRecipes : []).map((entry) => (
                       <option key={entry.id} value={entry.id}>{entry.id}</option>
                     ))}
                   </select>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { ArrowRight, Bot, Gauge, Plus, ShieldCheck } from 'lucide-react';
-import { AGENTS, type Agent } from '../../services/gemini';
+import type { Agent } from '../../services/gemini';
 import { DiagnosticsService, type ServerDiagnostics } from '../../services/diagnostics';
 import type { AppView } from './types';
 import { AgentAvatar, Badge, Button, Card } from './ui';
@@ -9,6 +9,7 @@ import { AgentAvatar, Badge, Button, Card } from './ui';
 type AgentsViewProps = {
   setActiveView: React.Dispatch<React.SetStateAction<AppView>>;
   setSelectedAgent: React.Dispatch<React.SetStateAction<Agent>>;
+  agents: Agent[];
 };
 
 const initialDiagnostics: ServerDiagnostics = {
@@ -27,6 +28,9 @@ const initialDiagnostics: ServerDiagnostics = {
 
 function getAgentCapabilities(agent: Agent) {
   if (agent.id === 'router') return ['memory', 'browser', 'routing'];
+  if (agent.id === 'dashboard-ops') return ['dashboard', 'workflow', 'handoff'];
+  if (agent.id === 'service-advisor') return ['intake', 'scheduling', 'customers'];
+  if (agent.id === 'growth-operator') return ['seo', 'reviews', 'revenue'];
   if (agent.id === 'seo-strategist' || agent.id === 'market-researcher') return ['browser', 'seo', 'research'];
   if (agent.id === 'system-coder' || agent.id === 'qa') return ['shell', 'files', 'diagnostics'];
   if (agent.id === 'automation') return ['tools', 'scheduler', 'workflows'];
@@ -34,7 +38,7 @@ function getAgentCapabilities(agent: Agent) {
   return ['chat', 'memory', 'handoff'];
 }
 
-export function AgentsView({ setActiveView, setSelectedAgent }: AgentsViewProps) {
+export function AgentsView({ setActiveView, setSelectedAgent, agents }: AgentsViewProps) {
   const [diagnostics, setDiagnostics] = useState<ServerDiagnostics>(initialDiagnostics);
   const [diagnosticsError, setDiagnosticsError] = useState('');
 
@@ -67,7 +71,7 @@ export function AgentsView({ setActiveView, setSelectedAgent }: AgentsViewProps)
   }, [diagnostics.onlineWorkers.length]);
 
   const initializeAgent = () => {
-    const routerAgent = AGENTS.find((agent) => agent.id === 'router') || AGENTS[0];
+    const routerAgent = agents.find((agent) => agent.id === 'router') || agents[0];
     setSelectedAgent(routerAgent);
     setActiveView('chat');
   };
@@ -110,7 +114,7 @@ export function AgentsView({ setActiveView, setSelectedAgent }: AgentsViewProps)
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
-          {AGENTS.map((agent) => {
+          {agents.map((agent) => {
             const capabilities = getAgentCapabilities(agent);
             const workerBacked = capabilities.some((capability) => ['browser', 'shell', 'files', 'seo'].includes(capability));
             const ready = !workerBacked || diagnostics.onlineWorkers.length > 0 || diagnostics.storageMode === 'local-json';

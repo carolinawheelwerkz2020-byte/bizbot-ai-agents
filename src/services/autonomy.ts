@@ -78,7 +78,7 @@ export type BrowserReadResult = {
   content: string;
 };
 
-export type ScheduledJobTargetType = 'tool' | 'recipe' | 'self_heal';
+export type ScheduledJobTargetType = 'tool' | 'recipe' | 'self_heal' | 'estimate_scan';
 
 export type ScheduledJob = {
   id: string;

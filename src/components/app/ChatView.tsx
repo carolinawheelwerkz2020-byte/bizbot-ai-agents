@@ -17,9 +17,9 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { AGENTS, type Agent, type AttachedFile } from '../../services/gemini';
+import type { Agent, AttachedFile } from '../../services/gemini';
 import { handoffPlanToWorkflow } from '../../services/handoffPlan';
-import type { Message, WorkflowState } from './types';
+import type { Message, SystemLog, WorkflowState } from './types';
 import type { RunSummary, RunTemplate } from './types';
 import { AgentAvatar, Button, cn } from './ui';
 
@@ -35,12 +35,14 @@ type ChatViewProps = {
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   removeAttachedFile: (index: number) => void;
   selectedAgent: Agent;
+  agents: Agent[];
   setInput: React.Dispatch<React.SetStateAction<string>>;
   toggleListening: () => void;
   workflowState: WorkflowState | null;
   executeWorkflow: (workflow: WorkflowState['workflow']) => Promise<void>;
   runSummaries: RunSummary[];
   runTemplates: RunTemplate[];
+  systemLogs: SystemLog[];
   handleReplayRun: (runSummary: RunSummary) => Promise<void>;
   handleSaveRunTemplate: (runSummary: RunSummary) => Promise<void>;
   handleLaunchTemplate: (runTemplate: RunTemplate) => Promise<void>;
@@ -58,12 +60,14 @@ export function ChatView({
   messagesEndRef,
   removeAttachedFile,
   selectedAgent,
+  agents,
   setInput,
   toggleListening,
   workflowState,
   executeWorkflow,
   runSummaries,
   runTemplates,
+  systemLogs,
   handleReplayRun,
   handleSaveRunTemplate,
   handleLaunchTemplate,
@@ -75,11 +79,13 @@ export function ChatView({
         initial={{ opacity: 0, scale: 0.99, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 1.01, y: -10 }}
-        className="flex-1 overflow-y-auto px-10 pb-40 pt-10 custom-scrollbar"
+        className="flex-1 overflow-y-auto px-5 pb-36 pt-6 lg:px-8 lg:pb-40 lg:pt-8 custom-scrollbar"
       >
-        <div className="max-w-4xl mx-auto space-y-12">
+        <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="space-y-8">
           {messages.length === 0 && !workflowState && (
-            <div className="py-24 flex flex-col items-center text-center space-y-12">
+            <div className="glass-dark rounded-[2rem] px-6 py-10 lg:px-10 lg:py-12">
+              <div className="grid gap-8 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-center">
               <motion.div
                 initial={{ rotateY: 90, opacity: 0 }}
                 animate={{ rotateY: 0, opacity: 1 }}
@@ -89,21 +95,23 @@ export function ChatView({
                 <AgentAvatar agent={selectedAgent} size="lg" glow />
               </motion.div>
 
-              <div className="space-y-4">
-                <h3 className="text-5xl font-serif font-black tracking-tighter italic">
-                  <span className="text-zinc-600">The</span> <span className="text-cyber-blue glow-text-blue">{selectedAgent.role}</span>
+              <div className="space-y-4 text-left">
+                <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyber-blue">Current Agent</div>
+                <h3 className="text-3xl lg:text-5xl font-black tracking-tight">
+                  {selectedAgent.name}
                 </h3>
-                <p className="text-zinc-500 max-w-xl mx-auto leading-relaxed text-lg font-medium">
-                  {selectedAgent.description} Execute a specialized directive below or provide custom parameters.
+                <p className="text-zinc-500 max-w-2xl leading-relaxed text-base lg:text-lg font-medium">
+                  {selectedAgent.description}
                 </p>
               </div>
+              </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
+              <div className="mt-8 grid grid-cols-1 gap-3 md:grid-cols-2">
                 {selectedAgent.suggestedPrompts.map((prompt) => (
                   <button
                     key={prompt}
                     onClick={() => handleSendMessage(prompt)}
-                    className="p-6 rounded-[2rem] glass-dark border-white/5 hover:border-cyber-blue/40 hover:bg-cyber-blue/5 transition-all text-left group relative overflow-hidden"
+                    className="p-5 rounded-3xl border border-white/8 bg-white/5 hover:border-cyber-blue/40 hover:bg-cyber-blue/5 transition-all text-left group relative overflow-hidden"
                   >
                     <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Zap size={16} className="text-cyber-blue" />
@@ -148,7 +156,7 @@ export function ChatView({
 
               <div className="flex gap-2">
                 {workflowState.workflow.steps.map((step, idx) => {
-                  const stepAgent = AGENTS.find((agent) => agent.id === step.agentId);
+                  const stepAgent = agents.find((agent) => agent.id === step.agentId);
                   const stepRun = workflowState.steps[idx];
                   return (
                     <div key={idx} className="flex-1 space-y-2">
@@ -183,7 +191,7 @@ export function ChatView({
 
               <div className="space-y-3">
                 {workflowState.steps.map((stepRun, idx) => {
-                  const stepAgent = AGENTS.find((agent) => agent.id === stepRun.agentId);
+                  const stepAgent = agents.find((agent) => agent.id === stepRun.agentId);
                   return (
                     <div key={`${stepRun.agentId}-${idx}`} className="rounded-2xl border border-white/5 bg-black/20 px-5 py-4">
                       <div className="flex items-center justify-between gap-4">
@@ -225,7 +233,7 @@ export function ChatView({
           )}
 
           {messages.map((msg, i) => (
-            <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className={cn('flex gap-8 group', msg.role === 'user' ? 'flex-row-reverse' : '')}>
+            <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className={cn('flex gap-4 lg:gap-6 group', msg.role === 'user' ? 'flex-row-reverse' : '')}>
               <div className="shrink-0 pt-2">
                 {msg.role === 'user' ? (
                   <div className="w-12 h-12 rounded-2xl bg-zinc-800 flex items-center justify-center text-zinc-500 border border-white/10 shadow-2xl">
@@ -236,16 +244,16 @@ export function ChatView({
                     <AlertCircle size={24} />
                   </div>
                 ) : (
-                  <AgentAvatar agent={AGENTS.find((agent) => agent.id === msg.agentId) || selectedAgent} size="md" glow />
+                  <AgentAvatar agent={agents.find((agent) => agent.id === msg.agentId) || selectedAgent} size="md" glow />
                 )}
               </div>
 
-              <div className={cn('max-w-[85%] space-y-4', msg.role === 'user' ? 'text-right' : 'text-left')}>
+              <div className={cn('max-w-[88%] space-y-4', msg.role === 'user' ? 'text-right' : 'text-left')}>
                 <div
                   className={cn(
-                    'relative inline-block px-10 py-8 rounded-[2.5rem] text-[15px] leading-relaxed shadow-[0_20px_50px_rgba(0,0,0,0.3)]',
+                    'relative inline-block px-6 py-5 lg:px-8 lg:py-6 rounded-[1.75rem] text-[15px] leading-relaxed shadow-lg shadow-black/10',
                     msg.role === 'user'
-                      ? 'bg-gradient-to-br from-cyber-blue to-blue-800 text-white rounded-tr-none border border-white/20'
+                      ? 'bg-gradient-to-br from-cyber-blue to-blue-700 text-white rounded-tr-none border border-white/20'
                       : msg.role === 'system'
                         ? 'bg-cyber-rose/10 text-rose-100 rounded-tl-none border border-cyber-rose/20'
                       : 'glass-dark rounded-tl-none text-zinc-300 border-white/5'
@@ -275,7 +283,7 @@ export function ChatView({
                         {msg.handoffPlan.steps.map((step, idx) => (
                           <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-black/40 rounded-xl border border-white/5">
                             <div className="w-4 h-4 bg-zinc-800 rounded-full flex items-center justify-center text-[8px] font-black">{idx + 1}</div>
-                            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">{AGENTS.find((agent) => agent.id === step.agentId)?.name}</span>
+                            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">{agents.find((agent) => agent.id === step.agentId)?.name}</span>
                           </div>
                         ))}
                       </div>
@@ -343,6 +351,63 @@ export function ChatView({
             </div>
           )}
           <div ref={messagesEndRef} />
+          </div>
+
+          <aside className="hidden lg:block">
+            <div className="sticky top-6 space-y-4">
+              <div className="glass-dark rounded-[1.75rem] p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-zinc-500">Agent Activity</div>
+                    <div className="mt-1 text-lg font-black text-white">Live Workstream</div>
+                  </div>
+                  <AgentAvatar agent={selectedAgent} size="sm" glow />
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {workflowState ? (
+                    workflowState.steps.map((step, index) => {
+                      const stepAgent = agents.find((agent) => agent.id === step.agentId);
+                      return (
+                        <div key={`${step.agentId}-${index}`} className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-bold text-zinc-200">{stepAgent?.name || step.agentId}</span>
+                            <span className={cn(
+                              'text-[9px] font-black uppercase tracking-[0.18em]',
+                              step.status === 'completed' ? 'text-cyber-lime' : step.status === 'failed' ? 'text-cyber-rose' : step.status === 'running' ? 'text-cyber-blue' : 'text-zinc-600'
+                            )}>
+                              {step.status}
+                            </span>
+                          </div>
+                          {step.output && <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-zinc-500">{step.output}</p>}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-4 text-sm text-zinc-500">
+                      No active pipeline. Start a task and this panel will show handoffs, tool work, and recent agent movement.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="glass-dark rounded-[1.75rem] p-5">
+                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-zinc-500">Recent Console</div>
+                <div className="mt-4 space-y-2">
+                  {systemLogs.slice(0, 7).map((log, index) => (
+                    <div key={`${log.msg}-${index}`} className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2">
+                      <div className={cn(
+                        'text-xs font-semibold leading-relaxed',
+                        log.type === 'warn' ? 'text-cyber-rose' : log.type === 'success' ? 'text-cyber-lime' : log.type === 'agent' ? 'text-cyber-blue' : 'text-zinc-400'
+                      )}>
+                        {log.msg}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       </motion.div>
 

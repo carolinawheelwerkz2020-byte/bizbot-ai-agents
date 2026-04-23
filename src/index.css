@@ -32,11 +32,11 @@
 
 @layer components {
   .glass {
-    @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl;
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-xl;
   }
   
   .glass-dark {
-    @apply bg-black/40 backdrop-blur-2xl border border-white/5 shadow-inner;
+    @apply bg-black/35 backdrop-blur-xl border border-white/5 shadow-sm;
   }
 
   .glow-blue {
@@ -65,6 +65,66 @@
     @apply bg-black/40 text-zinc-100 p-6 rounded-2xl my-6 overflow-x-auto font-mono text-xs border border-white/10;
     @apply bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl;
   }
+}
+
+.theme-light .glass {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+}
+
+.theme-light .glass-dark {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.07);
+}
+
+.theme-light .bg-void\/80,
+.theme-light .bg-void\/50,
+.theme-light .bg-void\/20 {
+  background: rgba(250, 247, 240, 0.88) !important;
+}
+
+.theme-light .border-white\/5,
+.theme-light .border-white\/10 {
+  border-color: rgba(15, 23, 42, 0.08) !important;
+}
+
+.theme-light .text-zinc-100,
+.theme-light .text-zinc-200,
+.theme-light .text-zinc-300 {
+  color: #1f2937 !important;
+}
+
+.theme-light .glass .text-white,
+.theme-light .glass-dark .text-white {
+  color: #0f172a !important;
+}
+
+.theme-light .text-zinc-400,
+.theme-light .text-zinc-500,
+.theme-light .text-zinc-600,
+.theme-light .text-zinc-700 {
+  color: #64748b !important;
+}
+
+.theme-light .bg-black\/20,
+.theme-light .bg-black\/30,
+.theme-light .bg-black\/40 {
+  background: rgba(248, 250, 252, 0.74) !important;
+}
+
+.theme-light .prose p,
+.theme-light .prose ul,
+.theme-light .prose ol {
+  color: #334155;
+}
+
+.theme-light .prose h1,
+.theme-light .prose h2,
+.theme-light .prose h3,
+.theme-light .prose h4 {
+  color: #0f172a;
 }
 
 .prose code {

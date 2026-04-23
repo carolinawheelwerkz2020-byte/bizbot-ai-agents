@@ -12,7 +12,7 @@ import {
   Settings,
   X,
 } from 'lucide-react';
-import { AGENTS, type Agent } from '../../services/gemini';
+import type { Agent } from '../../services/gemini';
 import type { AppView, ApprovalSummary, SystemLog } from './types';
 import { AgentAvatar, Badge, GlassButton, cn } from './ui';
 
@@ -21,6 +21,7 @@ type SidebarProps = {
   isMobileMenuOpen: boolean;
   isSidebarOpen: boolean;
   selectedAgent: Agent;
+  agents: Agent[];
   setActiveView: React.Dispatch<React.SetStateAction<AppView>>;
   setIsMobileMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -34,6 +35,7 @@ export function Sidebar({
   isMobileMenuOpen,
   isSidebarOpen,
   selectedAgent,
+  agents,
   setActiveView,
   setIsMobileMenuOpen,
   setIsSidebarOpen,
@@ -112,7 +114,7 @@ export function Sidebar({
             <div className="space-y-4">
               <p className="px-2 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-600">Neural Network</p>
               <div className="space-y-1">
-                {AGENTS.map((agent) => (
+                {agents.map((agent) => (
                   <button
                     key={agent.id}
                     onClick={() => {

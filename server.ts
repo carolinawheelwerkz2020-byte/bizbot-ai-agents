@@ -9,6 +9,7 @@ import dotenv from "dotenv";
 import multer from "multer";
 import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
+import { google } from "googleapis";
 import admin from "firebase-admin";
 import { chromium, type Browser, type Page } from "playwright";
 import { createCommandPolicy } from "./relay/commandPolicy";
@@ -66,6 +67,19 @@ type RegisteredTool = {
   createdAt: string;
 };
 
+type CustomAgent = {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  systemInstruction: string;
+  autonomous: boolean;
+  icon: string;
+  color: string;
+  suggestedPrompts: string[];
+  createdAt: string;
+};
+
 type HealingRecipeStep = {
   type: "command" | "tool";
   value: string;
@@ -111,7 +125,7 @@ type BrowserTraceEntry = {
   artifactPath?: string;
 };
 
-type ScheduledJobTargetType = "tool" | "recipe" | "self_heal";
+type ScheduledJobTargetType = "tool" | "recipe" | "self_heal" | "estimate_scan";
 
 type ScheduledJob = {
   id: string;
@@ -138,6 +152,46 @@ type JobRun = {
   startedAt: string;
   completedAt?: string;
   outputSummary?: string;
+};
+
+type EstimateLeadCandidate = {
+  messageId: string;
+  threadId?: string;
+  sender: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  status: "hot_estimate_lead" | "needs_reply" | "low_confidence";
+  requestedService: string;
+  missingInfo: string[];
+  urgency: "high" | "normal" | "low";
+  photosAttached: boolean;
+  recommendedNextAction: string;
+  dashboardFields: {
+    customerName: string;
+    email: string;
+    phone?: string;
+    vehicle?: string;
+    wheelIssue?: string;
+    serviceRequested: string;
+    photosAttached: boolean;
+    status: string;
+    recommendedFollowUp: string;
+  };
+  draftReply: string;
+};
+
+type EstimateScanRun = {
+  id: string;
+  ranAt: string;
+  configured: boolean;
+  authMode: "oauth-refresh-token" | "not-configured";
+  query: string;
+  lookbackDays: number;
+  leads: EstimateLeadCandidate[];
+  summary: string;
+  setupSteps?: string[];
+  error?: string;
 };
 
 type StoredRunSummary = {
@@ -188,9 +242,11 @@ const HEALING_RECIPES_PATH = path.join(process.cwd(), ".bizbot-healing-recipes.j
 const APPROVALS_PATH = path.join(process.cwd(), ".bizbot-approvals.json");
 const RUN_HISTORY_PATH = path.join(process.cwd(), ".bizbot-run-history.json");
 const RUN_TEMPLATES_PATH = path.join(process.cwd(), ".bizbot-run-templates.json");
+const CUSTOM_AGENTS_PATH = path.join(process.cwd(), ".bizbot-agents.json");
 const BROWSER_TRACE_PATH = path.join(process.cwd(), ".bizbot-browser-trace.json");
 const SCHEDULED_JOBS_PATH = path.join(process.cwd(), ".bizbot-scheduled-jobs.json");
 const JOB_RUNS_PATH = path.join(process.cwd(), ".bizbot-job-runs.json");
+const ESTIMATE_SCAN_RUNS_PATH = path.join(process.cwd(), ".bizbot-estimate-scans.json");
 const WORKER_HEARTBEAT_TTL_MS = Number(process.env.WORKER_HEARTBEAT_TTL_MS || 45_000);
 const MAX_FETCHED_PAGE_CHARS = 12_000;
 const MAX_CRAWL_PAGES = 20;
@@ -512,6 +568,16 @@ function writeJobRuns(entries: JobRun[]) {
   writeJsonArrayFile(JOB_RUNS_PATH, entries);
 }
 
+function readEstimateScanRuns() {
+  return readJsonArrayFile<EstimateScanRun>(ESTIMATE_SCAN_RUNS_PATH).filter(
+    (entry) => entry && typeof entry.id === "string" && typeof entry.ranAt === "string",
+  );
+}
+
+function writeEstimateScanRuns(entries: EstimateScanRun[]) {
+  writeJsonArrayFile(ESTIMATE_SCAN_RUNS_PATH, entries);
+}
+
 function readRunHistory() {
   return readJsonArrayFile<StoredRunSummary>(RUN_HISTORY_PATH).filter(
     (entry) => entry && typeof entry.id === "string" && typeof entry.agentId === "string" && typeof entry.title === "string",
@@ -530,6 +596,79 @@ function readRunTemplates() {
 
 function writeRunTemplates(entries: StoredRunTemplate[]) {
   writeJsonArrayFile(RUN_TEMPLATES_PATH, entries);
+}
+
+function readCustomAgents() {
+  return readJsonArrayFile<CustomAgent>(CUSTOM_AGENTS_PATH).filter(
+    (entry) => entry
+      && typeof entry.id === "string"
+      && typeof entry.name === "string"
+      && typeof entry.systemInstruction === "string",
+  );
+}
+
+function writeCustomAgents(entries: CustomAgent[]) {
+  writeJsonArrayFile(CUSTOM_AGENTS_PATH, entries);
+}
+
+function normalizeAgentId(value: string) {
+  return normalizeRegistryId(value).slice(0, 64);
+}
+
+function normalizeSuggestedPrompts(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function saveCustomAgent(input: {
+  id?: string;
+  name: string;
+  role: string;
+  description: string;
+  systemInstruction: string;
+  icon?: string;
+  color?: string;
+  suggestedPrompts?: unknown;
+}) {
+  const name = input.name.trim();
+  const role = input.role.trim();
+  const description = input.description.trim();
+  const systemInstruction = input.systemInstruction.trim();
+  const id = normalizeAgentId(input.id || name);
+
+  if (!id) throw new Error("Agent id must contain letters, numbers, dashes, or underscores.");
+  if (!name) throw new Error("Agent name is required.");
+  if (!role) throw new Error("Agent role is required.");
+  if (!description) throw new Error("Agent description is required.");
+  if (!systemInstruction) throw new Error("Agent system instruction is required.");
+
+  const agents = readCustomAgents();
+  const existingIndex = agents.findIndex((agent) => agent.id === id);
+  const existing = existingIndex >= 0 ? agents[existingIndex] : undefined;
+  const entry: CustomAgent = {
+    id,
+    name,
+    role,
+    description,
+    systemInstruction,
+    autonomous: true,
+    icon: input.icon?.trim() || existing?.icon || "Bot",
+    color: input.color?.trim() || existing?.color || "bg-cyber-blue",
+    suggestedPrompts: normalizeSuggestedPrompts(input.suggestedPrompts),
+    createdAt: existing?.createdAt || new Date().toISOString(),
+  };
+
+  if (existingIndex >= 0) {
+    agents[existingIndex] = entry;
+  } else {
+    agents.push(entry);
+  }
+
+  writeCustomAgents(agents);
+  return entry;
 }
 
 function createApprovalRequest(
@@ -564,10 +703,10 @@ function normalizeScheduleIntervalMinutes(value: unknown) {
 }
 
 function normalizeScheduleTargetType(value: unknown): ScheduledJobTargetType {
-  if (value === "tool" || value === "recipe" || value === "self_heal") {
+  if (value === "tool" || value === "recipe" || value === "self_heal" || value === "estimate_scan") {
     return value;
   }
-  throw new Error("Schedule target type must be tool, recipe, or self_heal.");
+  throw new Error("Schedule target type must be tool, recipe, self_heal, or estimate_scan.");
 }
 
 function computeNextRunAt(intervalMinutes: number, from = new Date()) {
@@ -604,6 +743,221 @@ function createJobRunEntry(schedule: ScheduledJob) {
     createdAt: new Date().toISOString(),
     startedAt: new Date().toISOString(),
   };
+}
+
+function getGmailScannerSetupSteps() {
+  return [
+    "Create or choose a Google Cloud OAuth client for the Gmail account that receives Carolina Wheel Werkz leads.",
+    "Enable the Gmail API in that Google Cloud project.",
+    "Generate a refresh token with read-only Gmail scope.",
+    "Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN in the BizBot server environment.",
+    "Restart the BizBot server, then run the scanner from Auxiliary.",
+  ];
+}
+
+function getGmailScannerStatus() {
+  const configured = Boolean(
+    process.env.GMAIL_CLIENT_ID
+    && process.env.GMAIL_CLIENT_SECRET
+    && process.env.GMAIL_REFRESH_TOKEN,
+  );
+  const recentRuns = readEstimateScanRuns().slice(0, 5);
+  return {
+    configured,
+    authMode: configured ? "oauth-refresh-token" as const : "not-configured" as const,
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    recentRuns,
+    setupSteps: configured ? [] : getGmailScannerSetupSteps(),
+  };
+}
+
+function createGmailClient() {
+  if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+    throw new Error("Gmail scanner is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN.");
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    process.env.GMAIL_REDIRECT_URI || "http://localhost",
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+  return google.gmail({ version: "v1", auth: oauth2Client });
+}
+
+function getHeaderValue(headers: Array<{ name?: string | null; value?: string | null }> | undefined, headerName: string) {
+  return headers?.find((header) => header.name?.toLowerCase() === headerName.toLowerCase())?.value || "";
+}
+
+function parseSender(value: string) {
+  const emailMatch = value.match(/<([^>]+)>/) || value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const email = emailMatch ? (emailMatch[1] || emailMatch[0]).trim() : "";
+  const name = value.replace(/<[^>]+>/g, "").replace(/"/g, "").trim() || email;
+  return { name, email };
+}
+
+function payloadHasAttachment(payload: any): boolean {
+  if (!payload) return false;
+  if (payload.filename) return true;
+  if (Array.isArray(payload.parts)) {
+    return payload.parts.some((part: any) => payloadHasAttachment(part));
+  }
+  return false;
+}
+
+function inferRequestedService(text: string) {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("powder")) return "Powder coating";
+  if (normalized.includes("curb rash") || normalized.includes("scratch") || normalized.includes("scuff")) return "Curb rash / cosmetic wheel repair";
+  if (normalized.includes("bent") || normalized.includes("bend") || normalized.includes("vibration")) return "Bent wheel straightening";
+  if (normalized.includes("crack")) return "Cracked wheel repair";
+  if (normalized.includes("rim") || normalized.includes("wheel")) return "Wheel repair estimate";
+  return "Estimate request";
+}
+
+function buildEstimateLeadCandidate(input: {
+  messageId: string;
+  threadId?: string;
+  sender: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  photosAttached: boolean;
+}): EstimateLeadCandidate {
+  const text = `${input.subject} ${input.snippet}`.toLowerCase();
+  const requestedService = inferRequestedService(text);
+  const missingInfo: string[] = [];
+  const hasPhone = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(input.snippet);
+  const hasVehicle = /\b(19|20)\d{2}\b/.test(input.snippet) || /\b(honda|toyota|ford|chevy|bmw|mercedes|audi|tesla|lexus|nissan|jeep|dodge|ram|kia|hyundai)\b/i.test(input.snippet);
+  if (!hasPhone) missingInfo.push("phone number");
+  if (!hasVehicle) missingInfo.push("vehicle year/make/model");
+  if (!input.photosAttached && !text.includes("photo") && !text.includes("picture")) missingInfo.push("wheel photos");
+
+  const hotWords = ["estimate", "quote", "price", "cost", "appointment", "schedule", "today", "asap", "urgent"];
+  const score = hotWords.reduce((total, word) => total + (text.includes(word) ? 1 : 0), 0);
+  const status = score >= 2 ? "hot_estimate_lead" : score === 1 ? "needs_reply" : "low_confidence";
+  const urgency = text.includes("asap") || text.includes("urgent") || text.includes("today") ? "high" : status === "hot_estimate_lead" ? "normal" : "low";
+  const parsedSender = parseSender(input.sender);
+  const recommendedNextAction = missingInfo.length > 0
+    ? `Reply and ask for ${missingInfo.join(", ")}.`
+    : "Reply with estimate next steps and offer scheduling.";
+
+  return {
+    ...input,
+    status,
+    requestedService,
+    missingInfo,
+    urgency,
+    recommendedNextAction,
+    dashboardFields: {
+      customerName: parsedSender.name,
+      email: parsedSender.email,
+      phone: hasPhone ? "Found in email body/snippet" : undefined,
+      vehicle: hasVehicle ? "Found in email body/snippet" : undefined,
+      wheelIssue: requestedService,
+      serviceRequested: requestedService,
+      photosAttached: input.photosAttached,
+      status: status === "hot_estimate_lead" ? "Needs Estimate" : "Needs Review",
+      recommendedFollowUp: recommendedNextAction,
+    },
+    draftReply: [
+      `Hi ${parsedSender.name && parsedSender.name !== parsedSender.email ? parsedSender.name.split(/\s+/)[0] : "there"},`,
+      "",
+      `Thanks for reaching out to Carolina Wheel Werkz. We can help with ${requestedService.toLowerCase()}.`,
+      missingInfo.length > 0
+        ? `Can you send ${missingInfo.join(", ")} so we can give you the most accurate estimate?`
+        : "Send over any additional photos if you have them, and we can help confirm pricing and scheduling.",
+      "",
+      "Thank you,",
+      "Carolina Wheel Werkz",
+    ].join("\n"),
+  };
+}
+
+async function runEstimateLeadScan(options?: { lookbackDays?: number; maxResults?: number }): Promise<EstimateScanRun> {
+  const status = getGmailScannerStatus();
+  const lookbackDays = Math.max(1, Math.min(14, Number(options?.lookbackDays || 2)));
+  const maxResults = Math.max(1, Math.min(50, Number(options?.maxResults || 20)));
+  const query = `newer_than:${lookbackDays}d (estimate OR quote OR pricing OR price OR cost OR repair OR wheel OR rim OR "powder coating" OR "curb rash" OR appointment)`;
+
+  if (!status.configured) {
+    const run: EstimateScanRun = {
+      id: `estimate-scan-${Date.now()}`,
+      ranAt: new Date().toISOString(),
+      configured: false,
+      authMode: "not-configured",
+      query,
+      lookbackDays,
+      leads: [],
+      summary: "Gmail scanner is not connected yet. Add OAuth credentials to enable inbox scanning.",
+      setupSteps: status.setupSteps,
+    };
+    writeEstimateScanRuns([run, ...readEstimateScanRuns()].slice(0, 20));
+    return run;
+  }
+
+  try {
+    const gmail = createGmailClient();
+    const list = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults,
+    });
+    const messages = list.data.messages || [];
+    const leads: EstimateLeadCandidate[] = [];
+
+    for (const item of messages) {
+      if (!item.id) continue;
+      const message = await gmail.users.messages.get({
+        userId: "me",
+        id: item.id,
+        format: "full",
+      });
+      const headers = message.data.payload?.headers || [];
+      const subject = getHeaderValue(headers, "Subject") || "(No subject)";
+      const sender = getHeaderValue(headers, "From") || "Unknown sender";
+      const date = getHeaderValue(headers, "Date") || "";
+      const snippet = message.data.snippet || "";
+      leads.push(buildEstimateLeadCandidate({
+        messageId: item.id,
+        threadId: item.threadId || undefined,
+        sender,
+        subject,
+        date,
+        snippet,
+        photosAttached: payloadHasAttachment(message.data.payload),
+      }));
+    }
+
+    const hotCount = leads.filter((lead) => lead.status === "hot_estimate_lead").length;
+    const needsReplyCount = leads.filter((lead) => lead.status === "needs_reply").length;
+    const run: EstimateScanRun = {
+      id: `estimate-scan-${Date.now()}`,
+      ranAt: new Date().toISOString(),
+      configured: true,
+      authMode: "oauth-refresh-token",
+      query,
+      lookbackDays,
+      leads,
+      summary: `Found ${leads.length} possible estimate emails: ${hotCount} hot lead(s), ${needsReplyCount} needing review.`,
+    };
+    writeEstimateScanRuns([run, ...readEstimateScanRuns()].slice(0, 20));
+    return run;
+  } catch (error) {
+    const run: EstimateScanRun = {
+      id: `estimate-scan-${Date.now()}`,
+      ranAt: new Date().toISOString(),
+      configured: true,
+      authMode: "oauth-refresh-token",
+      query,
+      lookbackDays,
+      leads: [],
+      summary: "Gmail scanner failed.",
+      error: error instanceof Error ? error.message : "Unknown Gmail scan error.",
+    };
+    writeEstimateScanRuns([run, ...readEstimateScanRuns()].slice(0, 20));
+    throw new Error(run.error);
+  }
 }
 
 function validateHealingSteps(input: unknown) {
@@ -918,6 +1272,8 @@ async function executeScheduledTarget(schedule: ScheduledJob) {
       return runHealingRecipe(schedule.targetId);
     case "self_heal":
       return selfHealProject();
+    case "estimate_scan":
+      return runEstimateLeadScan({ lookbackDays: 2, maxResults: 20 });
     default:
       throw new Error(`Unsupported scheduled target "${(schedule as ScheduledJob).targetType}".`);
   }
@@ -1099,6 +1455,45 @@ function getModelTools(): any[] {
               reason: { type: "string", description: "Short explanation for why the handoff is happening." },
             },
             required: ["agentId", "prompt"],
+          },
+        },
+        {
+          name: "create_agent",
+          description: "Create or update a custom BizBot agent that appears in the Agent Roster and sidebar.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Optional stable id using letters, numbers, dashes, or underscores." },
+              name: { type: "string", description: "Display name for the custom agent." },
+              role: { type: "string", description: "Short role label shown in the UI." },
+              description: { type: "string", description: "One-sentence description of what the agent does." },
+              systemInstruction: { type: "string", description: "Durable system instruction defining the agent behavior." },
+              icon: { type: "string", description: "Optional icon key such as Bot, Code, Search, ShieldCheck, Database, Terminal, Globe." },
+              color: { type: "string", description: "Optional Tailwind background class, e.g. bg-emerald-600." },
+              suggestedPrompts: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional starter prompts for this agent.",
+              },
+            },
+            required: ["name", "role", "description", "systemInstruction"],
+          },
+        },
+        {
+          name: "scan_gmail_estimate_leads",
+          description: "Scan connected Gmail read-only for Carolina Wheel Werkz customer estimate, quote, wheel repair, powder coating, curb rash, appointment, and voicemail leads. This cannot send, delete, archive, or modify email.",
+          parameters: {
+            type: "object",
+            properties: {
+              lookbackDays: {
+                type: "number",
+                description: "How many recent days to scan, between 1 and 14. Defaults to 2.",
+              },
+              maxResults: {
+                type: "number",
+                description: "Maximum Gmail messages to inspect, between 1 and 50. Defaults to 20.",
+              },
+            },
           },
         },
         {
@@ -2020,6 +2415,47 @@ async function resolveServerToolCall(
     };
   }
 
+  if (call.name === "create_agent") {
+    const agent = saveCustomAgent({
+      id: typeof call.args?.id === "string" ? call.args.id : undefined,
+      name: String(call.args?.name || ""),
+      role: String(call.args?.role || ""),
+      description: String(call.args?.description || ""),
+      systemInstruction: String(call.args?.systemInstruction || ""),
+      icon: typeof call.args?.icon === "string" ? call.args.icon : undefined,
+      color: typeof call.args?.color === "string" ? call.args.color : undefined,
+      suggestedPrompts: call.args?.suggestedPrompts,
+    });
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "create_agent",
+          response: {
+            content: `Created custom agent "${agent.name}". It will appear in the sidebar and Agent Roster after the app refreshes its agent list.`,
+            agent,
+          },
+        },
+      },
+    };
+  }
+
+  if (call.name === "scan_gmail_estimate_leads") {
+    const result = await runEstimateLeadScan({
+      lookbackDays: Number(call.args?.lookbackDays || 2),
+      maxResults: Number(call.args?.maxResults || 20),
+    });
+    return {
+      handled: true,
+      response: {
+        functionResponse: {
+          name: "scan_gmail_estimate_leads",
+          response: result,
+        },
+      },
+    };
+  }
+
   if (call.name === "open_browser") {
     return {
       handled: true,
@@ -2679,6 +3115,29 @@ async function startServer() {
     }
   });
 
+  app.get("/api/agents", (_req, res) => {
+    res.json({ agents: readCustomAgents() });
+  });
+
+  app.post("/api/agents", (req, res) => {
+    try {
+      const agent = saveCustomAgent({
+        id: typeof req.body?.id === "string" ? req.body.id : undefined,
+        name: String(req.body?.name || ""),
+        role: String(req.body?.role || ""),
+        description: String(req.body?.description || ""),
+        systemInstruction: String(req.body?.systemInstruction || ""),
+        icon: typeof req.body?.icon === "string" ? req.body.icon : undefined,
+        color: typeof req.body?.color === "string" ? req.body.color : undefined,
+        suggestedPrompts: req.body?.suggestedPrompts,
+      });
+      res.json(agent);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown custom agent error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
   app.get("/api/diagnostics/server", (_req, res) => {
     res.json(getServerDiagnostics());
   });
@@ -2826,6 +3285,28 @@ async function startServer() {
       res.json(entry);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown schedule creation error.";
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.get("/api/integrations/gmail/estimate-scanner/status", (req, res) => {
+    try {
+      res.json(getGmailScannerStatus());
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown Gmail scanner status error.";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post("/api/integrations/gmail/estimate-scanner/run", async (req, res) => {
+    try {
+      const result = await runEstimateLeadScan({
+        lookbackDays: req.body?.lookbackDays,
+        maxResults: req.body?.maxResults,
+      });
+      res.json(result);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown Gmail scanner run error.";
       res.status(400).json({ error: message });
     }
   });
@@ -3116,6 +3597,8 @@ async function startServer() {
         systemInstruction,
         "Neural memory is authoritative business context. If it contains relevant facts about the user, Bobby Sanderlin, Carolina Wheel Werkz, CWW, or BizBot, use those facts directly. Do not claim you have no memory when neural memory context is present.",
         "Web research rule: do not navigate to Google, Bing, or other search result pages in the browser. Search result pages trigger captcha and stall the run. Use known direct URLs from memory, fetch_url, crawl_site, seo_audit_url, browser_read after direct navigation, or ask for the missing URL.",
+        "Agent creation rule: if the user asks you to make, add, create, or install a new BizBot agent, use create_agent with a complete name, role, description, systemInstruction, icon, color, and suggestedPrompts. Do not say you cannot add agents to the sidebar; create_agent persists the agent and the UI refreshes the roster.",
+        "Gmail estimate scanner rule: you have a read-only tool named scan_gmail_estimate_leads for finding Carolina Wheel Werkz customer estimate leads. Use it when asked to scan Gmail/email for estimates, quotes, wheel repair requests, voicemails, or customer leads. Never claim email scanning is unavailable if this tool is listed. It cannot send, delete, archive, label, or modify emails.",
         memoryContext && memoryContext !== "No prior neural memory found."
           ? `Current neural memory:\n${memoryContext}`
           : "",

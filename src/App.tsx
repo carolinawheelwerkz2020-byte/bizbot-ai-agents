@@ -7,6 +7,8 @@ import {
   Globe,
   Terminal,
   Maximize2,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { AGENTS, chatWithAgent, Agent, AttachedFile, type ChatHistoryEntry, RelayBridge } from './services/gemini';
 import { 
@@ -17,12 +19,14 @@ import {
 import { uploadFileToGeminiViaServer } from './services/upload';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './lib/firebase';
+import { CWW_BUSINESS_CONTEXT, dashboardContextLine } from './lib/businessContext';
 import { AutonomyService } from './services/autonomy';
+import { AgentRegistryService } from './services/agents';
 import { PersistenceService } from './services/persistence';
 import { ChatView } from './components/app/ChatView';
 import { Sidebar } from './components/app/Sidebar';
 import type { AppView, ApprovalSummary, Message, RunSummary, RunTemplate, SystemLog, WorkflowState } from './components/app/types';
-import { AgentAvatar, Badge } from './components/app/ui';
+import { AgentAvatar, Badge, cn } from './components/app/ui';
 
 // --- Constants ---
 const INLINE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
@@ -352,7 +356,7 @@ function createNoTextFallback(agentName: string, lastToolSummary?: string) {
   return [
     `I did not get a clean final sentence back from ${agentName}, but I do have the core context and I should not have dead-ended.`,
     lastToolSummary ? `Latest tool result I have:\n${lastToolSummary}` : '',
-    'Known business context: Carolina Wheel Werkz is Bobby Sanderlin’s wheel repair and automotive services business, and the website is https://carolinawheelwerkz.com.',
+    `Known business context:\n${dashboardContextLine()}`,
     'Retry the request and I will continue from that context instead of acting like I do not know the site.',
   ].filter(Boolean).join('\n\n');
 }
@@ -412,6 +416,7 @@ function ViewLoadingFallback() {
 
 export default function App() {
   const [activeView, setActiveView] = useState<AppView>('chat');
+  const [availableAgents, setAvailableAgents] = useState<Agent[]>(AGENTS);
   const [selectedAgent, setSelectedAgent] = useState<Agent>(AGENTS.find(a => a.id === 'router') || AGENTS[0]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -427,11 +432,44 @@ export default function App() {
   const [approvalSummary, setApprovalSummary] = useState<ApprovalSummary>({ pendingCount: 0 });
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
   const [runTemplates, setRunTemplates] = useState<RunTemplate[]>([]);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof window === 'undefined') return 'dark';
+    return window.localStorage.getItem('bizbot-theme') === 'light' ? 'light' : 'dark';
+  });
   
   const [workflowState, setWorkflowState] = useState<WorkflowState | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem('bizbot-theme', theme);
+  }, [theme]);
+
+  const refreshAgents = useCallback(async () => {
+    try {
+      const customAgents = await AgentRegistryService.listCustomAgents();
+      const merged = [...AGENTS];
+      for (const customAgent of customAgents) {
+        const existingIndex = merged.findIndex((agent) => agent.id === customAgent.id);
+        if (existingIndex >= 0) {
+          merged[existingIndex] = customAgent;
+        } else {
+          merged.push(customAgent);
+        }
+      }
+      setAvailableAgents(merged);
+      setSelectedAgent((current) => merged.find((agent) => agent.id === current.id) || merged.find((agent) => agent.id === 'router') || merged[0]);
+      return merged;
+    } catch (error) {
+      addLog(`Agent registry unavailable: ${error instanceof Error ? error.message : 'Unknown error'}`, 'warn');
+      return AGENTS;
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAgents();
+  }, [refreshAgents]);
 
   useEffect(() => {
     // Load persisted messages for the selected agent
@@ -620,7 +658,7 @@ export default function App() {
             
             try {
               if (call.name === 'route_to_agent') {
-                const targetAgent = AGENTS.find((candidate) => candidate.id === call.args.agentId);
+                const targetAgent = availableAgents.find((candidate) => candidate.id === call.args.agentId);
                 if (!targetAgent) {
                   throw new Error(`Unknown target agent "${call.args.agentId}".`);
                 }
@@ -757,6 +795,7 @@ export default function App() {
       };
       setMessages(prev => [...prev, systemError]);
     } finally {
+      void refreshAgents();
       setIsLoading(false);
     }
   };
@@ -821,8 +860,8 @@ export default function App() {
         prompt: 'Open the Media Producer Hub. I need to generate vertical viral video content for social media.' 
       },
       dashboard: { 
-        agentId: 'project-manager', 
-        prompt: 'Access the Shop Dashboard. I need to manage current repair pipelines and multi-tenant CRM data.' 
+        agentId: 'dashboard-ops', 
+        prompt: `Open the Carolina Wheel Werkz dashboard command workflow. Use ${CWW_BUSINESS_CONTEXT.dashboardUrl} as the dashboard URL and help me decide what agents or automations should handle leads, jobs, customers, follow-ups, and reporting.`
       },
       analytics: { 
         agentId: 'finance', 
@@ -844,7 +883,7 @@ export default function App() {
 
     const target = toolMapping[toolId];
     if (target) {
-      const agent = AGENTS.find(a => a.id === target.agentId) || AGENTS[0];
+      const agent = availableAgents.find(a => a.id === target.agentId) || availableAgents[0];
       setSelectedAgent(agent);
       setActiveView('chat');
       handleSendMessage(target.prompt, agent);
@@ -869,7 +908,7 @@ export default function App() {
         })),
       } : null);
       const step = workflow.steps[i];
-      const agent = AGENTS.find(a => a.id === step.agentId) || AGENTS[0];
+      const agent = availableAgents.find(a => a.id === step.agentId) || availableAgents[0];
       
       addLog(`Step ${i + 1}: ${agent.name} is thinking...`, 'agent');
 
@@ -988,7 +1027,7 @@ export default function App() {
   };
 
   const handleReplayRun = async (runSummary: RunSummary) => {
-    const replayAgent = AGENTS.find((agent) => agent.id === runSummary.agentId) || selectedAgent;
+    const replayAgent = availableAgents.find((agent) => agent.id === runSummary.agentId) || selectedAgent;
     setSelectedAgent(replayAgent);
     setActiveView('chat');
     setInput(runSummary.sourcePrompt);
@@ -996,7 +1035,7 @@ export default function App() {
   };
 
   const handleLaunchTemplate = async (runTemplate: RunTemplate) => {
-    const templateAgent = AGENTS.find((agent) => agent.id === runTemplate.agentId) || selectedAgent;
+    const templateAgent = availableAgents.find((agent) => agent.id === runTemplate.agentId) || selectedAgent;
     setSelectedAgent(templateAgent);
     setActiveView('chat');
     setInput(runTemplate.prompt);
@@ -1005,7 +1044,7 @@ export default function App() {
   };
 
   const handleArchitectWorkflow = () => {
-    const routerAgent = AGENTS.find((agent) => agent.id === 'router') || selectedAgent;
+    const routerAgent = availableAgents.find((agent) => agent.id === 'router') || selectedAgent;
     setSelectedAgent(routerAgent);
     setInput('Help me architect a new multi-agent workflow for Carolina Wheel Werkz. Ask only for the missing details, then produce a pipeline plan.');
     setActiveView('chat');
@@ -1013,7 +1052,10 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-deep-space text-zinc-100 overflow-hidden font-sans selection:bg-cyber-blue/40 selection:text-white">
+    <div className={cn(
+      'flex h-screen overflow-hidden font-sans selection:bg-cyber-blue/40 selection:text-white',
+      theme === 'light' ? 'theme-light bg-[#f6f1e8] text-slate-950' : 'theme-dark bg-deep-space text-zinc-100'
+    )}>
       {/* Dynamic Background */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-cyber-blue/5 blur-[120px] rounded-full animate-pulse" />
@@ -1023,6 +1065,7 @@ export default function App() {
 
       <Sidebar
         activeView={activeView}
+        agents={availableAgents}
         approvalSummary={approvalSummary}
         isMobileMenuOpen={isMobileMenuOpen}
         isSidebarOpen={isSidebarOpen}
@@ -1090,6 +1133,13 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+              className="w-11 h-11 glass rounded-xl flex items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10"
+            >
+              {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+            <button
               onClick={() => setActiveView('toolbox')}
               title="Open Auxiliary configuration"
               className="w-11 h-11 glass rounded-xl flex items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10"
@@ -1116,10 +1166,12 @@ export default function App() {
                 messagesEndRef={messagesEndRef}
                 removeAttachedFile={removeAttachedFile}
                 selectedAgent={selectedAgent}
+                agents={availableAgents}
                 setInput={setInput}
                 toggleListening={toggleListening}
                 runSummaries={runSummaries}
                 runTemplates={runTemplates}
+                systemLogs={systemLogs}
                 handleReplayRun={handleReplayRun}
                 handleSaveRunTemplate={handleSaveRunTemplate}
                 handleLaunchTemplate={handleLaunchTemplate}
@@ -1130,6 +1182,7 @@ export default function App() {
             {activeView === 'agents' && (
               <Suspense fallback={<ViewLoadingFallback />}>
                 <AgentsView
+                  agents={availableAgents}
                   setActiveView={setActiveView}
                   setSelectedAgent={setSelectedAgent}
                 />

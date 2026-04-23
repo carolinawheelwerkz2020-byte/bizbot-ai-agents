@@ -108,7 +108,7 @@ export const GlassButton = ({
     className={cn(
       'flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 border',
       active
-        ? 'bg-cyber-blue/10 border-cyber-blue/30 text-cyber-blue shadow-[0_0_15px_rgba(59,130,246,0.1)]'
+        ? 'bg-cyber-blue/10 border-cyber-blue/30 text-cyber-blue shadow-sm'
         : 'bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10 hover:border-white/10 hover:text-white',
       className
     )}
@@ -137,7 +137,7 @@ export const Badge = ({
   return (
     <span
       className={cn(
-        'px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest border shrink-0',
+        'px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-[0.14em] border shrink-0',
         colors[color],
         className
       )}
@@ -153,7 +153,7 @@ export const Card = ({
 }: {
   children: React.ReactNode;
   className?: string;
-}) => <div className={cn('glass-dark border border-white/5 rounded-[2.5rem] overflow-hidden', className)}>{children}</div>;
+}) => <div className={cn('glass-dark border border-white/8 rounded-[1.75rem] overflow-hidden shadow-sm', className)}>{children}</div>;
 
 export const Button = ({
   children,
@@ -173,7 +173,7 @@ export const Button = ({
   loading?: boolean;
 }) => {
   const variants: Record<string, string> = {
-    primary: 'bg-cyber-blue text-white shadow-[0_0_30px_rgba(59,130,246,0.3)] hover:bg-blue-500 hover:shadow-[0_0_40px_rgba(59,130,246,0.5)]',
+    primary: 'bg-cyber-blue text-white shadow-lg shadow-blue-950/20 hover:bg-blue-500',
     secondary: 'bg-white/5 text-white border border-white/10 hover:bg-white/10 hover:border-white/20',
     ghost: 'text-zinc-500 hover:text-white hover:bg-white/5',
     danger: 'bg-cyber-rose/10 text-cyber-rose border border-cyber-rose/20 hover:bg-cyber-rose hover:text-white',
@@ -186,7 +186,7 @@ export const Button = ({
       onClick={onClick}
       disabled={disabled || loading}
       className={cn(
-        'flex items-center justify-center gap-3 px-8 py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-[10px] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed border border-transparent',
+        'flex items-center justify-center gap-3 px-6 py-3.5 rounded-2xl font-bold uppercase tracking-[0.14em] text-[10px] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed border border-transparent',
         variants[variant],
         className
       )}

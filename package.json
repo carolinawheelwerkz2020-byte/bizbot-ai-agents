@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "seo": "node scripts/seo-automation.js && node scripts/generate-sitemap.js",
     "deploy-seo": "npm run seo && npm run build && firebase deploy",
+    "gmail:token": "node scripts/generate-gmail-refresh-token.js",
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "lint": "tsc --noEmit"
   },

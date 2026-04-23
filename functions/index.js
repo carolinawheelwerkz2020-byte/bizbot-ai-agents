@@ -32,6 +32,198 @@ const APPROVAL_POLICY = {
 const CLOUD_LIMITATION_MESSAGE =
   "This feature is only available in the desktop/local runtime. The Firebase-hosted app supports chat, uploads, and cloud-safe history, but not local shell, file editing, package install, or Playwright browser control.";
 
+function getGmailScannerSetupSteps() {
+  return [
+    "Create or choose a Google Cloud OAuth client for the Gmail account that receives Carolina Wheel Werkz leads.",
+    "Enable the Gmail API in that Google Cloud project.",
+    "Generate a refresh token with read-only Gmail scope.",
+    "Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN in the Firebase function environment.",
+    "Redeploy or restart the BizBot API, then run the scanner from Auxiliary.",
+  ];
+}
+
+function getGmailScannerStatus() {
+  const configured = Boolean(
+    process.env.GMAIL_CLIENT_ID &&
+    process.env.GMAIL_CLIENT_SECRET &&
+    process.env.GMAIL_REFRESH_TOKEN
+  );
+  return {
+    configured,
+    authMode: configured ? "oauth-refresh-token" : "not-configured",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    recentRuns: [],
+    setupSteps: configured ? [] : getGmailScannerSetupSteps(),
+  };
+}
+
+function getHeaderValue(headers, headerName) {
+  const target = String(headerName).toLowerCase();
+  const found = (headers || []).find((header) => String(header.name || "").toLowerCase() === target);
+  return found && found.value ? String(found.value) : "";
+}
+
+function parseSender(value) {
+  const emailMatch = String(value || "").match(/<([^>]+)>/) || String(value || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const email = emailMatch ? String(emailMatch[1] || emailMatch[0]).trim() : "";
+  const name = String(value || "").replace(/<[^>]+>/g, "").replace(/"/g, "").trim() || email;
+  return { name, email };
+}
+
+function payloadHasAttachment(payload) {
+  if (!payload) return false;
+  if (payload.filename) return true;
+  if (Array.isArray(payload.parts)) return payload.parts.some((part) => payloadHasAttachment(part));
+  return false;
+}
+
+function inferRequestedService(text) {
+  const normalized = String(text || "").toLowerCase();
+  if (normalized.includes("powder")) return "Powder coating";
+  if (normalized.includes("curb rash") || normalized.includes("scratch") || normalized.includes("scuff")) return "Curb rash / cosmetic wheel repair";
+  if (normalized.includes("bent") || normalized.includes("bend") || normalized.includes("vibration")) return "Bent wheel straightening";
+  if (normalized.includes("crack")) return "Cracked wheel repair";
+  if (normalized.includes("rim") || normalized.includes("wheel")) return "Wheel repair estimate";
+  return "Estimate request";
+}
+
+function buildEstimateLeadCandidate(input) {
+  const text = `${input.subject} ${input.snippet}`.toLowerCase();
+  const requestedService = inferRequestedService(text);
+  const missingInfo = [];
+  const hasPhone = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(input.snippet);
+  const hasVehicle = /\b(19|20)\d{2}\b/.test(input.snippet) || /\b(honda|toyota|ford|chevy|bmw|mercedes|audi|tesla|lexus|nissan|jeep|dodge|ram|kia|hyundai)\b/i.test(input.snippet);
+  if (!hasPhone) missingInfo.push("phone number");
+  if (!hasVehicle) missingInfo.push("vehicle year/make/model");
+  if (!input.photosAttached && !text.includes("photo") && !text.includes("picture")) missingInfo.push("wheel photos");
+
+  const hotWords = ["estimate", "quote", "pricing", "price", "cost", "appointment", "schedule", "today", "asap", "urgent"];
+  const score = hotWords.reduce((total, word) => total + (text.includes(word) ? 1 : 0), 0);
+  const status = score >= 2 ? "hot_estimate_lead" : score === 1 ? "needs_reply" : "low_confidence";
+  const urgency = text.includes("asap") || text.includes("urgent") || text.includes("today") ? "high" : status === "hot_estimate_lead" ? "normal" : "low";
+  const parsedSender = parseSender(input.sender);
+  const recommendedNextAction = missingInfo.length > 0
+    ? `Reply and ask for ${missingInfo.join(", ")}.`
+    : "Reply with estimate next steps and offer scheduling.";
+
+  return {
+    ...input,
+    status,
+    requestedService,
+    missingInfo,
+    urgency,
+    recommendedNextAction,
+    dashboardFields: {
+      customerName: parsedSender.name,
+      email: parsedSender.email,
+      phone: hasPhone ? "Found in email body/snippet" : undefined,
+      vehicle: hasVehicle ? "Found in email body/snippet" : undefined,
+      wheelIssue: requestedService,
+      serviceRequested: requestedService,
+      photosAttached: input.photosAttached,
+      status: status === "hot_estimate_lead" ? "Needs Estimate" : "Needs Review",
+      recommendedFollowUp: recommendedNextAction,
+    },
+    draftReply: [
+      `Hi ${parsedSender.name && parsedSender.name !== parsedSender.email ? parsedSender.name.split(/\s+/)[0] : "there"},`,
+      "",
+      `Thanks for reaching out to Carolina Wheel Werkz. We can help with ${requestedService.toLowerCase()}.`,
+      missingInfo.length > 0
+        ? `Can you send ${missingInfo.join(", ")} so we can give you the most accurate estimate?`
+        : "Send over any additional photos if you have them, and we can help confirm pricing and scheduling.",
+      "",
+      "Thank you,",
+      "Carolina Wheel Werkz",
+    ].join("\n"),
+  };
+}
+
+async function getGmailAccessToken() {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: process.env.GMAIL_CLIENT_ID || "",
+      client_secret: process.env.GMAIL_CLIENT_SECRET || "",
+      refresh_token: process.env.GMAIL_REFRESH_TOKEN || "",
+      grant_type: "refresh_token",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) {
+    throw new Error(payload.error_description || payload.error || "Unable to refresh Gmail access token.");
+  }
+  return payload.access_token;
+}
+
+async function runEstimateLeadScan(options = {}) {
+  const status = getGmailScannerStatus();
+  const lookbackDays = Math.max(1, Math.min(14, Number(options.lookbackDays || 2)));
+  const maxResults = Math.max(1, Math.min(50, Number(options.maxResults || 20)));
+  const query = `newer_than:${lookbackDays}d (estimate OR quote OR pricing OR price OR cost OR repair OR wheel OR rim OR "powder coating" OR "curb rash" OR appointment)`;
+  const ranAt = new Date().toISOString();
+  const id = `estimate-scan-${Date.now()}`;
+
+  if (!status.configured) {
+    return {
+      id,
+      ranAt,
+      configured: false,
+      authMode: "not-configured",
+      query,
+      lookbackDays,
+      leads: [],
+      summary: "Gmail scanner is not connected yet. Add OAuth credentials to enable inbox scanning.",
+      setupSteps: status.setupSteps,
+    };
+  }
+
+  const accessToken = await getGmailAccessToken();
+  const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  listUrl.searchParams.set("q", query);
+  listUrl.searchParams.set("maxResults", String(maxResults));
+  const listResponse = await fetch(listUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const listPayload = await listResponse.json().catch(() => ({}));
+  if (!listResponse.ok) {
+    throw new Error(listPayload.error && listPayload.error.message ? listPayload.error.message : "Unable to search Gmail.");
+  }
+
+  const leads = [];
+  for (const item of listPayload.messages || []) {
+    if (!item.id) continue;
+    const messageResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(item.id)}?format=full`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const message = await messageResponse.json().catch(() => ({}));
+    if (!messageResponse.ok) continue;
+    const headers = message.payload && message.payload.headers ? message.payload.headers : [];
+    leads.push(buildEstimateLeadCandidate({
+      messageId: item.id,
+      threadId: item.threadId,
+      sender: getHeaderValue(headers, "From") || "Unknown sender",
+      subject: getHeaderValue(headers, "Subject") || "(No subject)",
+      date: getHeaderValue(headers, "Date") || "",
+      snippet: message.snippet || "",
+      photosAttached: payloadHasAttachment(message.payload),
+    }));
+  }
+
+  const hotCount = leads.filter((lead) => lead.status === "hot_estimate_lead").length;
+  const needsReplyCount = leads.filter((lead) => lead.status === "needs_reply").length;
+  return {
+    id,
+    ranAt,
+    configured: true,
+    authMode: "oauth-refresh-token",
+    query,
+    lookbackDays,
+    leads,
+    summary: `Found ${leads.length} possible estimate emails: ${hotCount} hot lead(s), ${needsReplyCount} needing review.`,
+  };
+}
+
 function getEmailsFromEnv(name) {
   return (process.env[name] || "")
     .split(",")
@@ -352,6 +544,23 @@ async function handleChat(req, res, stream) {
               required: ["fact"],
             },
           },
+          {
+            name: "scan_gmail_estimate_leads",
+            description: "Scan connected Gmail read-only for Carolina Wheel Werkz customer estimate, quote, wheel repair, powder coating, curb rash, appointment, and voicemail leads. This cannot send, delete, archive, or modify email.",
+            parameters: {
+              type: "object",
+              properties: {
+                lookbackDays: {
+                  type: "number",
+                  description: "How many recent days to scan, between 1 and 14. Defaults to 2.",
+                },
+                maxResults: {
+                  type: "number",
+                  description: "Maximum Gmail messages to inspect, between 1 and 50. Defaults to 20.",
+                },
+              },
+            },
+          },
         ],
       },
     ];
@@ -365,7 +574,10 @@ async function handleChat(req, res, stream) {
 
     const geminiModel = genAI.getGenerativeModel({
       model: modelName,
-      systemInstruction: systemInstruction || "You are a helpful business assistant.",
+      systemInstruction: [
+        systemInstruction || "You are a helpful business assistant.",
+        "Gmail estimate scanner rule: you have a read-only tool named scan_gmail_estimate_leads for finding Carolina Wheel Werkz customer estimate leads. Use it when asked to scan Gmail/email for estimates, quotes, wheel repair requests, voicemails, or customer leads. Never claim email scanning is unavailable if this tool is listed. It cannot send, delete, archive, label, or modify emails.",
+      ].join("\n\n"),
       tools,
       safetySettings,
     });
@@ -426,6 +638,17 @@ async function handleChat(req, res, stream) {
               response: { content: "Fact saved to neural memory." },
             },
           });
+        } else if (c.name === "scan_gmail_estimate_leads") {
+          const scanResult = await runEstimateLeadScan({
+            lookbackDays: c.args && c.args.lookbackDays,
+            maxResults: c.args && c.args.maxResults,
+          });
+          toolResponses.push({
+            functionResponse: {
+              name: "scan_gmail_estimate_leads",
+              response: scanResult,
+            },
+          });
         } else if (["bash", "read_file", "write_file", "edit_file"].includes(c.name)) {
           // These must be executed locally by the client-side bridge.
           returnToClient = true;
@@ -478,6 +701,110 @@ apiRouter.get("/autonomy/overview", async (req, res) => {
   } catch (error) {
     console.error("autonomy overview", error && error.message ? error.message : error);
     res.status(500).json({ error: "Unable to load cloud autonomy overview." });
+  }
+});
+
+apiRouter.get("/agents", async (_req, res) => {
+  try {
+    const snapshot = await admin.firestore()
+      .collection("bizbot_custom_agents")
+      .orderBy("createdAt", "desc")
+      .limit(100)
+      .get()
+      .catch(() => null);
+    res.json({ agents: snapshot ? snapshot.docs.map((doc) => doc.data()) : [] });
+  } catch (error) {
+    console.error("agents list", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load agent registry." });
+  }
+});
+
+apiRouter.post("/agents", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const name = String(payload.name || "").trim();
+    const id = String(payload.id || name)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64);
+    if (!id || !name || !payload.role || !payload.description || !payload.systemInstruction) {
+      return res.status(400).json({ error: "Agent id, name, role, description, and systemInstruction are required." });
+    }
+    const entry = {
+      id,
+      name,
+      role: String(payload.role),
+      description: String(payload.description),
+      systemInstruction: String(payload.systemInstruction),
+      autonomous: true,
+      icon: String(payload.icon || "Bot"),
+      color: String(payload.color || "bg-cyber-blue"),
+      suggestedPrompts: Array.isArray(payload.suggestedPrompts) ? payload.suggestedPrompts.map(String).slice(0, 6) : [],
+      createdAt: new Date().toISOString(),
+    };
+    await admin.firestore().collection("bizbot_custom_agents").doc(id).set(entry, { merge: true });
+    res.json(entry);
+  } catch (error) {
+    console.error("agents save", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to save agent." });
+  }
+});
+
+apiRouter.get("/diagnostics/server", async (req, res) => {
+  try {
+    const overview = await getOverviewForCloud(req);
+    res.json({
+      storageMode: "firestore-cloud",
+      workerAuthMode: process.env.WORKER_API_KEY ? "api-key" : "dev-fallback",
+      heartbeatTtlMs: 45000,
+      executionTimeouts: {
+        localCommandMs: 30000,
+        remoteWorkerMs: 60000,
+        browserActionMs: 20000,
+      },
+      onlineWorkers: [],
+      pendingApprovals: overview.telemetry.pendingApprovals,
+      recentExecutionFailures: [],
+    });
+  } catch (error) {
+    console.error("diagnostics server", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load server diagnostics." });
+  }
+});
+
+apiRouter.get("/diagnostics/workers", (_req, res) => {
+  res.json({
+    workers: [],
+    recentExecutionFailures: [],
+  });
+});
+
+apiRouter.get("/diagnostics/workers/:id", (req, res) => {
+  res.status(404).json({ error: `Worker ${req.params.id} is not registered in hosted Firebase mode.` });
+});
+
+apiRouter.post("/diagnostics/test", (_req, res) => {
+  res.status(400).json({
+    ok: false,
+    success: false,
+    error: CLOUD_LIMITATION_MESSAGE,
+    type: "capability_missing",
+    executor: "unavailable",
+  });
+});
+
+apiRouter.get("/integrations/gmail/estimate-scanner/status", (_req, res) => {
+  res.json(getGmailScannerStatus());
+});
+
+apiRouter.post("/integrations/gmail/estimate-scanner/run", async (req, res) => {
+  try {
+    res.json(await runEstimateLeadScan(req.body || {}));
+  } catch (error) {
+    console.error("estimate scanner", error && error.message ? error.message : error);
+    res.status(400).json({ error: error && error.message ? error.message : "Unable to run estimate scanner." });
   }
 });
 
@@ -611,5 +938,11 @@ setGlobalOptions({ maxInstances: 10 });
 
 exports.bizbot_server = onRequest({
   cors: true,
-  invoker: "public"
+  invoker: "public",
+  secrets: [
+    "GEMINI_API_KEY",
+    "GMAIL_CLIENT_ID",
+    "GMAIL_CLIENT_SECRET",
+    "GMAIL_REFRESH_TOKEN",
+  ],
 }, app);
