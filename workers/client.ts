@@ -24,7 +24,8 @@ const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS || 15_000);
 const WORKER_COMMAND_TIMEOUT_MS = Number(process.env.WORKER_COMMAND_TIMEOUT_MS || 60_000);
 const WORKER_NETWORK_TIMEOUT_MS = Number(process.env.WORKER_NETWORK_TIMEOUT_MS || 30_000);
 
-const allowedCommands = (process.env.WORKER_ALLOWED_COMMANDS || "npm,npx,node,git,tsx,tsc,vite")
+const defaultAllowedCommands = "npm,npx,node,git,tsx,tsc,vite,pnpm,yarn,bun,python,python3,pip,pip3,uv,make,sh,bash,zsh";
+const allowedCommands = (process.env.WORKER_ALLOWED_COMMANDS || process.env.RELAY_ALLOWED_COMMANDS || defaultAllowedCommands)
   .split(",")
   .map((command) => command.trim())
   .filter(Boolean);
@@ -35,6 +36,7 @@ const executor = new LocalExecutor({
   filePolicy: createFilePolicy([WORKER_ROOT]),
   defaultCwd: WORKER_ROOT,
   timeoutMs: WORKER_COMMAND_TIMEOUT_MS,
+  allowShellSyntax: process.env.RELAY_ALLOW_SHELL_OPERATORS === "true",
 });
 
 function detectPlatform(): WorkerPlatform {

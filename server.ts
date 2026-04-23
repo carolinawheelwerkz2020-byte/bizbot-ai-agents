@@ -224,7 +224,7 @@ const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
 const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 const ALLOWED_MIME_PREFIXES = ["image/", "video/", "application/pdf", "text/", "application/json"];
 const AUTH_DISABLED = process.env.AUTH_DISABLED === "true";
-const RELAY_ALLOWED_COMMANDS = new Set([
+const DEFAULT_RELAY_ALLOWED_COMMANDS = [
   "npm",
   "npx",
   "node",
@@ -232,7 +232,26 @@ const RELAY_ALLOWED_COMMANDS = new Set([
   "tsx",
   "tsc",
   "vite",
-]);
+  "pnpm",
+  "yarn",
+  "bun",
+  "python",
+  "python3",
+  "pip",
+  "pip3",
+  "uv",
+  "make",
+  "sh",
+  "bash",
+  "zsh",
+];
+const RELAY_ALLOWED_COMMANDS = new Set(
+  (process.env.RELAY_ALLOWED_COMMANDS || DEFAULT_RELAY_ALLOWED_COMMANDS.join(","))
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
+const RELAY_ALLOW_SHELL_OPERATORS = process.env.RELAY_ALLOW_SHELL_OPERATORS === "true";
 const RELAY_ALLOWED_ROOTS = [
   path.resolve(process.env.RELAY_ROOT || process.cwd()),
 ];
@@ -257,6 +276,12 @@ const MAX_BROWSER_TRACE_ENTRIES = 60;
 const BROWSER_ACTION_TIMEOUT_MS = 20_000;
 const MAX_JOB_RUN_ENTRIES = 120;
 const MAX_SCHEDULED_JOBS = 30;
+const AUTO_APPROVE_ACTIONS = new Set(
+  (process.env.BIZBOT_AUTO_APPROVE_ACTIONS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
 
 const ROLE_RANK: Record<UserRole, number> = {
   operator: 1,
@@ -281,6 +306,7 @@ const localExecutor = new LocalExecutor({
   filePolicy,
   defaultCwd: process.cwd(),
   timeoutMs: 60_000,
+  allowShellSyntax: RELAY_ALLOW_SHELL_OPERATORS,
 });
 const executionRouter = new ExecutionRouter({
   localExecutor,
@@ -400,8 +426,12 @@ function tokenizeCommand(command: string) {
     throw new Error("No command provided.");
   }
 
-  if (/[|&;><`]/.test(trimmed)) {
-    throw new Error("Shell operators are not allowed in relay commands.");
+  if (/\brm\s+-rf\b/i.test(trimmed) || /\bsudo\b/i.test(trimmed)) {
+    throw new Error("Blocked by command policy: sudo and destructive rm -rf are not allowed.");
+  }
+
+  if (/[|&;><`$]/.test(trimmed) && !RELAY_ALLOW_SHELL_OPERATORS) {
+    throw new Error("Shell operators are not allowed in relay commands unless RELAY_ALLOW_SHELL_OPERATORS=true.");
   }
 
   return trimmed.match(/"[^"]*"|'[^']*'|\S+/g)?.map((token) => token.replace(/^["']|["']$/g, "")) || [];
@@ -410,7 +440,7 @@ function tokenizeCommand(command: string) {
 function validateRelayCommand(command: string) {
   const parts = tokenizeCommand(command);
   const executable = parts[0]?.toLowerCase();
-  if (!executable || !RELAY_ALLOWED_COMMANDS.has(executable)) {
+  if (!executable || (!RELAY_ALLOWED_COMMANDS.has("*") && !RELAY_ALLOWED_COMMANDS.has(executable))) {
     throw new Error(`Command "${parts[0] || ""}" is not allowed by the relay policy.`);
   }
   return {
@@ -671,7 +701,14 @@ function saveCustomAgent(input: {
   return entry;
 }
 
-function createApprovalRequest(
+function shouldAutoApproveAction(type: ApprovalActionType, requestedByRole?: UserRole) {
+  if (AUTO_APPROVE_ACTIONS.size === 0) return false;
+  if (!AUTO_APPROVE_ACTIONS.has("all") && !AUTO_APPROVE_ACTIONS.has(type)) return false;
+  const policy = APPROVAL_POLICY[type];
+  return hasRequiredRole(requestedByRole, policy.approveRole);
+}
+
+async function createApprovalRequest(
   type: ApprovalActionType,
   payload: Record<string, unknown>,
   reason?: string,
@@ -679,7 +716,7 @@ function createApprovalRequest(
   requestedByRole?: UserRole,
 ) {
   const approvals = readApprovals();
-  const approval: PendingApproval = {
+  let approval: PendingApproval = {
     id: `approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type,
     payload,
@@ -690,6 +727,30 @@ function createApprovalRequest(
     requestedByRole,
   };
   approvals.unshift(approval);
+
+  if (shouldAutoApproveAction(type, requestedByRole)) {
+    try {
+      const result = await executeApprovalAction(approval);
+      approval = {
+        ...approval,
+        status: "approved",
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: requestedBy || "auto-approver",
+        result,
+      };
+      approvals[0] = approval;
+    } catch (error) {
+      approval = {
+        ...approval,
+        status: "rejected",
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: requestedBy || "auto-approver",
+        reason: `Auto-approval failed: ${error instanceof Error ? error.message : "Unknown error."}`,
+      };
+      approvals[0] = approval;
+    }
+  }
+
   writeApprovals(approvals);
   return approval;
 }
@@ -2327,12 +2388,14 @@ function getAutonomyOverview() {
     relay: {
       allowedCommands: [...RELAY_ALLOWED_COMMANDS],
       allowedRoots: RELAY_ALLOWED_ROOTS,
+      allowShellOperators: RELAY_ALLOW_SHELL_OPERATORS,
     },
     execution: {
       mode: process.env.BIZBOT_PREFER_REMOTE_WORKERS === "true" ? "remote-preferred" : "local-first",
       workerHeartbeatTtlMs: WORKER_HEARTBEAT_TTL_MS,
       cloudSafeTools: ["chat", "upload", "history", "templates", "memory"],
       workerRequiredTools: ["bash", "read_file", "write_file", "edit_file", "browser_*", "registered_tools", "self_heal"],
+      autoApproveActions: [...AUTO_APPROVE_ACTIONS],
     },
     workers: workerRegistry.list(),
     limits: {
@@ -2646,7 +2709,7 @@ async function resolveServerToolCall(
   }
 
   if (call.name === "register_tool") {
-    const approval = createApprovalRequest("register_tool", {
+    const approval = await createApprovalRequest("register_tool", {
       id: String(call.args?.id || ""),
       description: String(call.args?.description || ""),
       command: String(call.args?.command || ""),
@@ -2677,7 +2740,7 @@ async function resolveServerToolCall(
   }
 
   if (call.name === "install_npm_package") {
-    const approval = createApprovalRequest("install_npm_package", {
+    const approval = await createApprovalRequest("install_npm_package", {
       packageName: String(call.args?.packageName || ""),
       saveDev: Boolean(call.args?.saveDev),
     }, "Agent requested package install.", requester?.email, requester?.role);
@@ -2714,7 +2777,7 @@ async function resolveServerToolCall(
   }
 
   if (call.name === "save_healing_recipe") {
-    const approval = createApprovalRequest("save_healing_recipe", {
+    const approval = await createApprovalRequest("save_healing_recipe", {
       id: String(call.args?.id || ""),
       description: String(call.args?.description || ""),
       stepsJson: String(call.args?.stepsJson || "[]"),
@@ -2732,7 +2795,7 @@ async function resolveServerToolCall(
   }
 
   if (call.name === "run_healing_recipe") {
-    const approval = createApprovalRequest("run_healing_recipe", {
+    const approval = await createApprovalRequest("run_healing_recipe", {
       id: String(call.args?.id || ""),
     }, "Agent requested healing recipe execution.", requester?.email, requester?.role);
     return {
@@ -2748,7 +2811,7 @@ async function resolveServerToolCall(
   }
 
   if (call.name === "self_heal_project") {
-    const approval = createApprovalRequest("self_heal_project", {}, "Agent requested project self-heal.", requester?.email, requester?.role);
+    const approval = await createApprovalRequest("self_heal_project", {}, "Agent requested project self-heal.", requester?.email, requester?.role);
     return {
       handled: true,
       response: {
@@ -3428,7 +3491,7 @@ async function startServer() {
   app.post("/api/autonomy/tools", async (req: AuthenticatedRequest, res) => {
     try {
       enforceActionRole(req.userRole, "register_tool", "request");
-      const approval = createApprovalRequest("register_tool", {
+      const approval = await createApprovalRequest("register_tool", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         command: String(req.body?.command || ""),
@@ -3454,7 +3517,7 @@ async function startServer() {
   app.post("/api/autonomy/install-package", async (req: AuthenticatedRequest, res) => {
     try {
       enforceActionRole(req.userRole, "install_npm_package", "request");
-      const approval = createApprovalRequest("install_npm_package", {
+      const approval = await createApprovalRequest("install_npm_package", {
         packageName: String(req.body?.packageName || ""),
         saveDev: Boolean(req.body?.saveDev),
       }, "Operator requested package install.", req.userEmail, req.userRole);
@@ -3468,7 +3531,7 @@ async function startServer() {
   app.post("/api/autonomy/healing-recipes", async (req: AuthenticatedRequest, res) => {
     try {
       enforceActionRole(req.userRole, "save_healing_recipe", "request");
-      const approval = createApprovalRequest("save_healing_recipe", {
+      const approval = await createApprovalRequest("save_healing_recipe", {
         id: String(req.body?.id || ""),
         description: String(req.body?.description || ""),
         stepsJson: String(req.body?.stepsJson || "[]"),
@@ -3483,7 +3546,7 @@ async function startServer() {
   app.post("/api/autonomy/healing-recipes/run", async (req: AuthenticatedRequest, res) => {
     try {
       enforceActionRole(req.userRole, "run_healing_recipe", "request");
-      const approval = createApprovalRequest("run_healing_recipe", {
+      const approval = await createApprovalRequest("run_healing_recipe", {
         id: String(req.body?.id || ""),
       }, "Operator requested healing recipe execution.", req.userEmail, req.userRole);
       res.json(approval);
@@ -3496,7 +3559,7 @@ async function startServer() {
   app.post("/api/autonomy/self-heal", async (req: AuthenticatedRequest, res) => {
     try {
       enforceActionRole(req.userRole, "self_heal_project", "request");
-      const approval = createApprovalRequest("self_heal_project", {}, "Operator requested project self-heal.", req.userEmail, req.userRole);
+      const approval = await createApprovalRequest("self_heal_project", {}, "Operator requested project self-heal.", req.userEmail, req.userRole);
       res.json(approval);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown self-heal error.";

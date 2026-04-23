@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { execFile } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { validateRelayCommand, type CommandPolicy } from "./commandPolicy";
 import { resolveRelayPath, type FilePolicy } from "./filePolicy";
 import { executionError, normalizeExecutionError } from "./errors";
@@ -11,6 +11,7 @@ export type LocalExecutorOptions = {
   filePolicy: FilePolicy;
   defaultCwd: string;
   timeoutMs?: number;
+  allowShellSyntax?: boolean;
 };
 
 export class LocalExecutor implements Executor {
@@ -68,8 +69,56 @@ export class LocalExecutor implements Executor {
       request.workdir && request.workdir.trim() ? request.workdir : this.options.defaultCwd,
       this.options.filePolicy,
     );
+    const rawCommand = String(request.command || "").trim();
 
     logWorkerEvent("command.start", { executor: "local", command: executable, cwd });
+
+    if (this.options.allowShellSyntax) {
+      return new Promise((resolve) => {
+        exec(rawCommand, { cwd, timeout: this.timeoutMs() }, (error, stdout, stderr) => {
+          const durationMs = Date.now() - startedAt;
+          if (error && error.killed) {
+            logWorkerEvent("command.timeout", { executor: "local", command: rawCommand, durationMs });
+            resolve(executionError({
+              error: "Execution timed out",
+              type: "timeout",
+              executor: "local",
+              durationMs,
+            }));
+            return;
+          }
+
+          if (error && typeof error.code !== "number") {
+            logWorkerEvent("command.fail", { executor: "local", command: rawCommand, durationMs, error: error.message });
+            resolve(executionError({
+              error: error.message,
+              type: "execution",
+              executor: "local",
+              durationMs,
+            }));
+            return;
+          }
+
+          const result = {
+            ok: !error || error.code === 0,
+            success: !error || error.code === 0,
+            executor: "local",
+            stdout: stdout || "",
+            stderr: stderr || "",
+            exitCode: typeof error?.code === "number" ? error.code : 0,
+            signal: error?.signal || null,
+            durationMs,
+          } satisfies ExecutionResponse;
+          logWorkerEvent(result.ok ? "command.success" : "command.fail", {
+            executor: "local",
+            command: rawCommand,
+            durationMs,
+            exitCode: result.exitCode,
+          });
+          resolve(result);
+        });
+      });
+    }
 
     return new Promise((resolve) => {
       execFile(executable, args, { cwd, timeout: this.timeoutMs() }, (error, stdout, stderr) => {
