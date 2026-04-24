@@ -395,6 +395,30 @@ function buildPartsFromFiles(message, files) {
   return parts;
 }
 
+/** Prefer SDK text(); fall back to candidate parts (skips thought-only parts). */
+function extractVisibleText(rawResponse) {
+  if (!rawResponse) return "";
+  try {
+    const t = rawResponse.text();
+    if (typeof t === "string" && t.trim()) return t.trim();
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e);
+    if (/blocked|safety|not supported|no candidates|empty/i.test(msg)) return "";
+  }
+  try {
+    const cands = rawResponse.candidates;
+    if (!Array.isArray(cands) || !cands[0] || !cands[0].content || !Array.isArray(cands[0].content.parts)) return "";
+    let acc = "";
+    for (const part of cands[0].content.parts) {
+      if (part && part.thought) continue;
+      if (part && typeof part.text === "string") acc += part.text;
+    }
+    return acc.trim();
+  } catch (_) {
+    return "";
+  }
+}
+
 async function waitForFileActive(fileManager, resourceName, maxMs = 600000) {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
@@ -529,6 +553,20 @@ async function handleChat(req, res, stream) {
             },
           },
           {
+            name: "route_to_agent",
+            description:
+              "Hand work off to another BizBot agent so execution can continue with the best specialist. The browser client performs the handoff.",
+            parameters: {
+              type: "object",
+              properties: {
+                agentId: { type: "string", description: "The target BizBot agent id (e.g. seo-strategist, dashboard-ops)." },
+                prompt: { type: "string", description: "The exact prompt or task brief for the target agent." },
+                reason: { type: "string", description: "Short explanation for why the handoff is happening." },
+              },
+              required: ["agentId", "prompt"],
+            },
+          },
+          {
             name: "get_neural_memory",
             description: "Retrieve long-term memory facts from the neural database.",
             parameters: {
@@ -618,6 +656,9 @@ async function handleChat(req, res, stream) {
     const result = await geminiModel.generateContent({ contents });
     let response = await result.response;
 
+    let ranServerToolFollowup = false;
+    let conversationAfterTools = null;
+
     const call = response.functionCalls();
     if (call && call.length > 0) {
       const toolResponses = [];
@@ -656,8 +697,8 @@ async function handleChat(req, res, stream) {
               response: scanResult,
             },
           });
-        } else if (["bash", "read_file", "write_file", "edit_file"].includes(c.name)) {
-          // These must be executed locally by the client-side bridge.
+        } else if (["bash", "read_file", "write_file", "edit_file", "route_to_agent"].includes(c.name)) {
+          // Executed by the browser client (relay bridge or agent handoff).
           returnToClient = true;
         }
       }
@@ -668,25 +709,41 @@ async function handleChat(req, res, stream) {
       }
 
       if (toolResponses.length > 0) {
-        const secondContents = [
-          ...contents, 
-          { role: "model", parts: call.map(c => ({ functionCall: c })) },
-          { role: "function", parts: toolResponses }
+        conversationAfterTools = [
+          ...contents,
+          { role: "model", parts: call.map((c) => ({ functionCall: c })) },
+          { role: "function", parts: toolResponses },
         ];
-        const secondResult = await geminiModel.generateContent({ contents: secondContents });
+        const secondResult = await geminiModel.generateContent({ contents: conversationAfterTools });
         response = await secondResult.response;
+        ranServerToolFollowup = true;
       }
     }
 
-    let text;
-    try {
-      text = response.text();
-    } catch (textError) {
-      const textMsg = textError && textError.message ? textError.message : String(textError);
-      if (/blocked|safety|not supported|empty/i.test(textMsg)) {
-        return res.status(422).json({ error: "Response was blocked.", details: "Try rephrasing." });
-      }
-      throw textError;
+    let text = extractVisibleText(response);
+    const finishReason = response && response.candidates && response.candidates[0] && response.candidates[0].finishReason;
+    if (!text && /SAFETY|BLOCKLIST|PROHIBITED/i.test(String(finishReason || ""))) {
+      return res.status(422).json({ error: "Response was blocked.", details: "Try rephrasing." });
+    }
+    if (!text && ranServerToolFollowup && conversationAfterTools) {
+      const nudgeContents = [
+        ...conversationAfterTools,
+        {
+          role: "user",
+          parts: [
+            {
+              text: "Produce a concise final answer for the user using the tool results and context above. If some data was missing or empty, say what was unavailable. Do not return an empty response.",
+            },
+          ],
+        },
+      ];
+      const nudgeResult = await geminiModel.generateContent({ contents: nudgeContents });
+      response = await nudgeResult.response;
+      text = extractVisibleText(response);
+    }
+    if (!text) {
+      text =
+        "I could not get a clean model reply on this turn (empty response after tools). Please retry your message once; if it repeats, try a shorter prompt or a different agent.";
     }
     const usage = response.usageMetadata || response.usage;
     res.json({ text, usage: usage || undefined });
