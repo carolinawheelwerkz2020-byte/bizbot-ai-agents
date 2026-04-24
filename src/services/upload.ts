@@ -1,4 +1,5 @@
-import { authHeaderObject } from '../lib/authHeaders';
+import { apiUrl } from '../lib/apiBase';
+import { authenticatedFetch } from '../lib/authHeaders';
 
 /** Multipart upload to server → Google Gemini File API (large images/videos). */
 export async function uploadFileToGeminiViaServer(file: File): Promise<{
@@ -9,8 +10,7 @@ export async function uploadFileToGeminiViaServer(file: File): Promise<{
 }> {
   const form = new FormData();
   form.append('file', file);
-  const authHeaders = await authHeaderObject();
-  const res = await fetch('/api/upload', { method: 'POST', headers: authHeaders, body: form });
+  const res = await authenticatedFetch(apiUrl('/api/upload'), { method: 'POST', body: form });
   if (!res.ok) {
     let msg = res.statusText;
     try {

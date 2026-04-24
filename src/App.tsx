@@ -145,8 +145,9 @@ function presentError(error: unknown, context: 'chat' | 'upload' | 'relay' | 'wo
       title: 'Session expired',
       summary: 'Your session is no longer valid, so the request could not reach the API.',
       steps: [
-        'Sign in again and retry the request.',
-        'If Firebase auth is enabled locally, make sure the server can verify your token.',
+        'Sign out, sign in again, then refresh the page and retry.',
+        'On the hosted app, confirm your account email is allowed (Cloud Function env `ALLOWED_EMAILS` if set).',
+        'If you develop locally, ensure `npm run dev` uses the same Firebase project as the web app.',
       ],
       logMessage: 'Authentication required for API request.',
     };

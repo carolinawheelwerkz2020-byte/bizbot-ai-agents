@@ -9,7 +9,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { authHeaderObject } from '../lib/authHeaders';
+import { authenticatedFetch } from '../lib/authHeaders';
 import type { AttachedFile } from './gemini';
 import type { HandoffPlan } from './handoffPlan';
 import type { RunSummary, RunTemplate } from '../components/app/types';
@@ -109,12 +109,10 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
 }
 
 async function historyFetch<T>(input: string, init?: RequestInit) {
-  const authHeaders = await authHeaderObject();
-  const response = await fetch(input, {
+  const response = await authenticatedFetch(input, {
     ...init,
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders,
       ...init?.headers,
     },
   });

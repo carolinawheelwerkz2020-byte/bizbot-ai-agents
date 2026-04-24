@@ -1,4 +1,4 @@
-import { authHeaderObject } from '../lib/authHeaders';
+import { authenticatedFetch } from '../lib/authHeaders';
 import { apiUrl } from '../lib/apiBase';
 import { dashboardContextLine } from '../lib/businessContext';
 
@@ -444,12 +444,10 @@ export async function chatWithAgent(
   files?: AttachedFile[],
   toolResults?: any[]
 ): Promise<any> {
-  const authHeaders = await authHeaderObject();
-  const response = await fetch(apiUrl("/api/chat"), {
+  const response = await authenticatedFetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders,
     },
     body: JSON.stringify({
       message,
@@ -473,38 +471,32 @@ export async function chatWithAgent(
  */
 export const RelayBridge = {
   async exec(command: string, workdir?: string) {
-    const authHeaders = await authHeaderObject();
-    const res = await fetch(apiUrl("/api/relay/exec"), {
+    const res = await authenticatedFetch(apiUrl("/api/relay/exec"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command, workdir }),
     });
     return parseApiResponse(res);
   },
 
   async read_file(path: string) {
-    const authHeaders = await authHeaderObject();
-    const res = await fetch(apiUrl(`/api/relay/read?path=${encodeURIComponent(path)}`), {
-      headers: authHeaders,
-    });
+    const res = await authenticatedFetch(apiUrl(`/api/relay/read?path=${encodeURIComponent(path)}`));
     return parseApiResponse(res);
   },
 
   async write_file(path: string, content: string) {
-    const authHeaders = await authHeaderObject();
-    const res = await fetch(apiUrl("/api/relay/write"), {
+    const res = await authenticatedFetch(apiUrl("/api/relay/write"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, content }),
     });
     return parseApiResponse(res);
   },
 
   async edit_file(path: string, oldString: string, newString: string) {
-    const authHeaders = await authHeaderObject();
-    const res = await fetch(apiUrl("/api/relay/edit"), {
+    const res = await authenticatedFetch(apiUrl("/api/relay/edit"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, oldString, newString }),
     });
     return parseApiResponse(res);

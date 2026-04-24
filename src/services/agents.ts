@@ -1,4 +1,4 @@
-import { authHeaderObject } from '../lib/authHeaders';
+import { authenticatedFetch } from '../lib/authHeaders';
 import type { Agent } from './gemini';
 
 async function parseApiResponse<T>(response: Response): Promise<T> {
@@ -17,15 +17,15 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
 }
 
 async function agentFetch<T>(input: string, init?: RequestInit) {
-  const authHeaders = await authHeaderObject();
-  return parseApiResponse<T>(await fetch(input, {
-    ...init,
-    headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders,
-      ...init?.headers,
-    },
-  }));
+  return parseApiResponse<T>(
+    await authenticatedFetch(input, {
+      ...init,
+      headers: {
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    }),
+  );
 }
 
 export const AgentRegistryService = {

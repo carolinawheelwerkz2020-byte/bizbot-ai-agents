@@ -1,4 +1,4 @@
-import { authHeaderObject } from '../lib/authHeaders';
+import { authenticatedFetch } from '../lib/authHeaders';
 
 export type EstimateLeadCandidate = {
   messageId: string;
@@ -64,12 +64,10 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
 }
 
 async function scannerFetch<T>(input: string, init?: RequestInit) {
-  const authHeaders = await authHeaderObject();
-  const response = await fetch(input, {
+  const response = await authenticatedFetch(input, {
     ...init,
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders,
       ...init?.headers,
     },
   });
