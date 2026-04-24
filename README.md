@@ -51,4 +51,7 @@ Typical full UI + API rollout:
 
 `npm run deploy:app` (hosting build, then functions).
 
-**GCP:** If deploy logs mention the Compute Engine API, enable **Compute Engine API** for the project in [Google Cloud Console → APIs & Services](https://console.cloud.google.com/apis/library/compute.googleapis.com) (or install `gcloud` and run `gcloud services enable compute.googleapis.com --project=YOUR_PROJECT_ID`).
+**GCP — Compute Engine API:** If deploy logs mention it, enable for **`cww-agents`** (or set `GCP_PROJECT_ID`):
+
+- **Console (one click):** [Enable Compute Engine API for `cww-agents`](https://console.cloud.google.com/apis/library/compute.googleapis.com?project=cww-agents) — use **Enable**.
+- **CLI:** After `gcloud auth login`, run `npm run gcp:enable-compute` (uses `scripts/gcp-enable-compute.sh`). If `gcloud` is not on your `PATH`, install the SDK from [Cloud SDK install](https://cloud.google.com/sdk/docs/install); a user-local install often lives at `~/google-cloud-sdk/google-cloud-sdk/bin/gcloud`.

@@ -15,6 +15,7 @@
     "deploy:functions": "FUNCTIONS_DISCOVERY_TIMEOUT=120 npx firebase-tools deploy --only functions",
     "deploy:firestore": "npx firebase-tools deploy --only firestore",
     "deploy:app": "npm run deploy:hosting && npm run deploy:functions",
+    "gcp:enable-compute": "bash scripts/gcp-enable-compute.sh",
     "deploy-seo": "npm run seo && npm run build && npx firebase-tools deploy",
     "gmail:token": "node scripts/generate-gmail-refresh-token.js",
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
