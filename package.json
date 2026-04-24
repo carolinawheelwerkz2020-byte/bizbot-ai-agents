@@ -11,7 +11,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "seo": "node scripts/seo-automation.js && node scripts/generate-sitemap.js",
-    "deploy-seo": "npm run seo && npm run build && firebase deploy",
+    "deploy:hosting": "npm run build && npx firebase-tools deploy --only hosting",
+    "deploy:functions": "FUNCTIONS_DISCOVERY_TIMEOUT=120 npx firebase-tools deploy --only functions",
+    "deploy:firestore": "npx firebase-tools deploy --only firestore",
+    "deploy:app": "npm run deploy:hosting && npm run deploy:functions",
+    "deploy-seo": "npm run seo && npm run build && npx firebase-tools deploy",
     "gmail:token": "node scripts/generate-gmail-refresh-token.js",
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "lint": "tsc --noEmit"

@@ -13,6 +13,7 @@ import { authHeaderObject } from '../lib/authHeaders';
 import type { AttachedFile } from './gemini';
 import type { HandoffPlan } from './handoffPlan';
 import type { RunSummary, RunTemplate } from '../components/app/types';
+import { mergeGoldenRunTemplates } from '../lib/goldenRunTemplates';
 
 export interface PersistedMessage {
   role: 'user' | 'assistant' | 'system';
@@ -225,10 +226,11 @@ export const PersistenceService = {
         ...template,
         createdAt: new Date(template.createdAt),
       }));
-      writeLocalRunTemplates(templates);
-      return templates;
+      const merged = mergeGoldenRunTemplates(templates);
+      writeLocalRunTemplates(merged);
+      return merged;
     } catch {
-      return readLocalRunTemplates();
+      return mergeGoldenRunTemplates(readLocalRunTemplates());
     }
   },
 

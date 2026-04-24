@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useRef, useEffect, useCallback } from 'react';
+import React, { lazy, Suspense, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
   Loader2,
   Menu,
@@ -19,6 +19,7 @@ import {
 import { uploadFileToGeminiViaServer } from './services/upload';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './lib/firebase';
+import { getRuntimeSurface, runtimeSurfaceLabel } from './lib/runtimeMode';
 import { CWW_BUSINESS_CONTEXT, dashboardContextLine } from './lib/businessContext';
 import { AutonomyService } from './services/autonomy';
 import { AgentRegistryService } from './services/agents';
@@ -438,6 +439,10 @@ export default function App() {
   });
   
   const [workflowState, setWorkflowState] = useState<WorkflowState | null>(null);
+
+  const runtimeSurface = useMemo(() => getRuntimeSurface(), []);
+  const runtimeBadge = useMemo(() => runtimeSurfaceLabel(runtimeSurface), [runtimeSurface]);
+  const isHostedLimitedRuntime = runtimeSurface === 'hosted_limited';
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1067,6 +1072,7 @@ export default function App() {
         activeView={activeView}
         agents={availableAgents}
         approvalSummary={approvalSummary}
+        isHostedLimitedRuntime={isHostedLimitedRuntime}
         isMobileMenuOpen={isMobileMenuOpen}
         isSidebarOpen={isSidebarOpen}
         selectedAgent={selectedAgent}
@@ -1102,8 +1108,11 @@ export default function App() {
             <div className="hidden sm:block">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg lg:text-xl font-black tracking-tighter">{selectedAgent.name}</h2>
-                <div className="px-2 py-0.5 rounded-md bg-cyber-blue/10 border border-cyber-blue/20 text-[9px] font-black text-cyber-blue uppercase tracking-widest">
-                  Ready
+                <div
+                  className="px-2 py-0.5 rounded-md bg-cyber-blue/10 border border-cyber-blue/20 text-[9px] font-black text-cyber-blue uppercase tracking-widest cursor-help"
+                  title={runtimeBadge.detail}
+                >
+                  {runtimeBadge.short}
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-0.5">
@@ -1183,6 +1192,7 @@ export default function App() {
               <Suspense fallback={<ViewLoadingFallback />}>
                 <AgentsView
                   agents={availableAgents}
+                  isHostedLimitedRuntime={isHostedLimitedRuntime}
                   setActiveView={setActiveView}
                   setSelectedAgent={setSelectedAgent}
                 />

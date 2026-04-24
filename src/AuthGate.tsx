@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { auth, isFirebaseConfigured } from "./lib/firebase";
+import { isClientAuthBypassEnabled } from "./lib/clientAuthBypass";
 import { AuthUserProvider } from "./AuthContext";
 import LoginScreen from "./components/LoginScreen";
 import { Loader2 } from "lucide-react";
@@ -9,7 +10,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(isFirebaseConfigured);
 
-  const isAuthDisabled = import.meta.env.VITE_AUTH_DISABLED === "true";
+  const isAuthDisabled = isClientAuthBypassEnabled();
 
   useEffect(() => {
     if (isAuthDisabled || !auth) {

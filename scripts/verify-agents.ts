@@ -1,7 +1,7 @@
 /**
  * Smoke-test: each agent returns a non-empty reply from POST /api/chat.
  * Run with dev server: npm run dev (separate terminal), then: npx tsx scripts/verify-agents.ts
- * If the server has auth enabled (AUTH_DISABLED not true), set VERIFY_AGENTS_BEARER to a Firebase ID token.
+ * If the server enforces auth (no dev bypass: AUTH_DISABLED unset/false, or production without ALLOW_INSECURE_CLOUD_AUTH_BYPASS), set VERIFY_AGENTS_BEARER to a Firebase ID token.
  */
 import { AGENTS } from '../src/services/gemini';
 

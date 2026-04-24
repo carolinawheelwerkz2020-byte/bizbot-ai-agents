@@ -296,9 +296,16 @@ function unsupportedCloudAction(res) {
   return res.status(400).json({ error: CLOUD_LIMITATION_MESSAGE });
 }
 
+function isCloudAuthBypassEnabled() {
+  if (process.env.AUTH_DISABLED !== "true") return false;
+  if (process.env.FUNCTIONS_EMULATOR === "true") return true;
+  if (process.env.NODE_ENV !== "production") return true;
+  return process.env.ALLOW_INSECURE_CLOUD_AUTH_BYPASS === "true";
+}
+
 async function requireAuth(req, res, next) {
   try {
-    if (process.env.AUTH_DISABLED === "true") return next();
+    if (isCloudAuthBypassEnabled()) return next();
     const rel = (req.originalUrl && req.originalUrl.split("?")[0]) || "";
     if (req.method === "GET" && (rel === "/api" || rel === "/api/")) return next();
     const authHeader = req.headers.authorization;

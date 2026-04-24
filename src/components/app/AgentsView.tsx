@@ -10,6 +10,8 @@ type AgentsViewProps = {
   setActiveView: React.Dispatch<React.SetStateAction<AppView>>;
   setSelectedAgent: React.Dispatch<React.SetStateAction<Agent>>;
   agents: Agent[];
+  /** Firebase Hosting: worker-backed agents still chat; relay/shell are unavailable. */
+  isHostedLimitedRuntime?: boolean;
 };
 
 const initialDiagnostics: ServerDiagnostics = {
@@ -26,19 +28,36 @@ const initialDiagnostics: ServerDiagnostics = {
   recentExecutionFailures: [],
 };
 
-function getAgentCapabilities(agent: Agent) {
-  if (agent.id === 'router') return ['memory', 'browser', 'routing'];
-  if (agent.id === 'dashboard-ops') return ['dashboard', 'workflow', 'handoff'];
-  if (agent.id === 'service-advisor') return ['intake', 'scheduling', 'customers'];
-  if (agent.id === 'growth-operator') return ['seo', 'reviews', 'revenue'];
-  if (agent.id === 'seo-strategist' || agent.id === 'market-researcher') return ['browser', 'seo', 'research'];
-  if (agent.id === 'system-coder' || agent.id === 'qa') return ['shell', 'files', 'diagnostics'];
-  if (agent.id === 'automation') return ['tools', 'scheduler', 'workflows'];
-  if (agent.id === 'knowledge-base') return ['memory', 'docs', 'sops'];
-  return ['chat', 'memory', 'handoff'];
+const AGENT_CAPABILITY_TAGS: Record<string, string[]> = {
+  router: ['memory', 'routing', 'fetch', 'handoff'],
+  'strategy-advisor': ['strategy', 'memory', 'research'],
+  'project-manager': ['planning', 'tasks', 'memory'],
+  sales: ['pipeline', 'follow-up', 'memory'],
+  'lead-gen': ['leads', 'outreach', 'memory'],
+  'customer-support': ['tickets', 'tone', 'memory'],
+  'social-media': ['content', 'calendar', 'memory'],
+  'content-production': ['copy', 'assets', 'memory'],
+  'seo-strategist': ['seo', 'fetch', 'research'],
+  'product-dev': ['specs', 'roadmap', 'memory'],
+  'software-architect': ['design', 'apis', 'memory'],
+  automation: ['tools', 'scheduler', 'workflows'],
+  finance: ['analysis', 'reporting', 'memory'],
+  'data-analyst': ['metrics', 'insights', 'memory'],
+  'dashboard-ops': ['dashboard', 'workflow', 'handoff'],
+  'service-advisor': ['intake', 'scheduling', 'customers'],
+  'growth-operator': ['seo', 'reviews', 'revenue'],
+  'market-researcher': ['research', 'fetch', 'competitive'],
+  legal: ['compliance', 'contracts', 'memory'],
+  'knowledge-base': ['memory', 'docs', 'sops'],
+  'system-coder': ['shell', 'files', 'diagnostics'],
+  'qa-expert': ['shell', 'files', 'tests', 'diagnostics'],
+};
+
+function getAgentCapabilities(agent: Agent): string[] {
+  return AGENT_CAPABILITY_TAGS[agent.id] ?? ['chat', 'memory', 'handoff'];
 }
 
-export function AgentsView({ setActiveView, setSelectedAgent, agents }: AgentsViewProps) {
+export function AgentsView({ setActiveView, setSelectedAgent, agents, isHostedLimitedRuntime = false }: AgentsViewProps) {
   const [diagnostics, setDiagnostics] = useState<ServerDiagnostics>(initialDiagnostics);
   const [diagnosticsError, setDiagnosticsError] = useState('');
 
@@ -98,6 +117,11 @@ export function AgentsView({ setActiveView, setSelectedAgent, agents }: AgentsVi
               Deploy specialized AI protocols to manage every facet of your business operations.
             </p>
             <div className="flex flex-wrap gap-2">
+              {isHostedLimitedRuntime && (
+                <span title="Shell, relay, npm, and Playwright run only with the desktop app and local server.">
+                  <Badge color="gold">Hosted · cloud-safe</Badge>
+                </span>
+              )}
               <Badge color={diagnosticsError ? 'rose' : 'lime'}>{diagnosticsError ? 'Diagnostics issue' : executionStatus}</Badge>
               <Badge color={diagnostics.workerAuthMode === 'api-key' ? 'lime' : 'gold'}>Worker auth: {diagnostics.workerAuthMode}</Badge>
               <Badge color={diagnostics.pendingApprovals > 0 ? 'rose' : 'blue'}>{diagnostics.pendingApprovals} approvals</Badge>
@@ -116,8 +140,14 @@ export function AgentsView({ setActiveView, setSelectedAgent, agents }: AgentsVi
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
           {agents.map((agent) => {
             const capabilities = getAgentCapabilities(agent);
-            const workerBacked = capabilities.some((capability) => ['browser', 'shell', 'files', 'seo'].includes(capability));
-            const ready = !workerBacked || diagnostics.onlineWorkers.length > 0 || diagnostics.storageMode === 'local-json';
+            const workerBacked = capabilities.some((capability) =>
+              ['fetch', 'shell', 'files', 'seo', 'tests', 'diagnostics', 'tools', 'scheduler', 'workflows'].includes(capability),
+            );
+            const ready =
+              isHostedLimitedRuntime ||
+              !workerBacked ||
+              diagnostics.onlineWorkers.length > 0 ||
+              diagnostics.storageMode === 'local-json';
 
             return (
               <Card key={agent.id} className="group hover:border-cyber-blue/30 transition-all duration-700 p-10 space-y-8 flex flex-col hover:shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)]">
@@ -132,7 +162,9 @@ export function AgentsView({ setActiveView, setSelectedAgent, agents }: AgentsVi
                     <Badge color={agent.id === 'router' ? 'rose' : 'blue'}>
                       {agent.id === 'router' ? 'System Gateway' : 'Specialized'}
                     </Badge>
-                    <Badge color={ready ? 'lime' : 'gold'}>{ready ? 'Ready' : 'Needs worker'}</Badge>
+                    <Badge color={ready ? 'lime' : 'gold'}>
+                      {ready ? (isHostedLimitedRuntime && workerBacked ? 'Chat ready · tools limited' : 'Ready') : 'Needs worker'}
+                    </Badge>
                   </div>
                 </div>
 

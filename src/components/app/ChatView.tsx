@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { motion } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -18,10 +18,11 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Agent, AttachedFile } from '../../services/gemini';
+import { getRuntimeSurface, runtimeSurfaceLabel, type RuntimeSurface } from '../../lib/runtimeMode';
 import { handoffPlanToWorkflow } from '../../services/handoffPlan';
 import type { Message, SystemLog, WorkflowState } from './types';
 import type { RunSummary, RunTemplate } from './types';
-import { AgentAvatar, Button, cn } from './ui';
+import { AgentAvatar, Badge, Button, cn } from './ui';
 
 type ChatViewProps = {
   attachedFiles: AttachedFile[];
@@ -46,6 +47,8 @@ type ChatViewProps = {
   handleReplayRun: (runSummary: RunSummary) => Promise<void>;
   handleSaveRunTemplate: (runSummary: RunSummary) => Promise<void>;
   handleLaunchTemplate: (runTemplate: RunTemplate) => Promise<void>;
+  /** When set, overrides client-side detection (e.g. tests). */
+  runtimeSurfaceOverride?: RuntimeSurface;
 };
 
 export function ChatView({
@@ -71,7 +74,14 @@ export function ChatView({
   handleReplayRun,
   handleSaveRunTemplate,
   handleLaunchTemplate,
+  runtimeSurfaceOverride,
 }: ChatViewProps) {
+  const runtimeSurface = useMemo(
+    () => runtimeSurfaceOverride ?? getRuntimeSurface(),
+    [runtimeSurfaceOverride],
+  );
+  const runtimeInfo = useMemo(() => runtimeSurfaceLabel(runtimeSurface), [runtimeSurface]);
+
   return (
     <>
       <motion.div
@@ -96,7 +106,12 @@ export function ChatView({
               </motion.div>
 
               <div className="space-y-4 text-left">
-                <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyber-blue">Current Agent</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyber-blue">Current Agent</div>
+                  <span title={runtimeInfo.detail}>
+                    <Badge color={runtimeSurface === 'hosted_limited' ? 'gold' : 'lime'}>{runtimeInfo.short}</Badge>
+                  </span>
+                </div>
                 <h3 className="text-3xl lg:text-5xl font-black tracking-tight">
                   {selectedAgent.name}
                 </h3>

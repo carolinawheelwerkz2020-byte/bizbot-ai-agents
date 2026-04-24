@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 import { auth } from "../lib/firebase";
+import { isClientAuthBypassEnabled } from "../lib/clientAuthBypass";
 import { Loader2 } from "lucide-react";
 
 export default function LoginScreen() {
@@ -11,7 +12,7 @@ export default function LoginScreen() {
 
   async function onEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (import.meta.env.VITE_AUTH_DISABLED === "true") {
+    if (isClientAuthBypassEnabled()) {
       // In dev mode with auth disabled, we skip Firebase sign in
       // Since AuthGate already checks this flag, we just need to refresh or move on
       window.location.reload(); 
@@ -89,7 +90,7 @@ export default function LoginScreen() {
           </button>
         </form>
 
-        {import.meta.env.VITE_AUTH_DISABLED === "true" && (
+        {isClientAuthBypassEnabled() && (
           <div className="mt-4">
             <button
               onClick={() => {

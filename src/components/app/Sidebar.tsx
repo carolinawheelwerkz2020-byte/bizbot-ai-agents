@@ -20,6 +20,7 @@ type SidebarProps = {
   activeView: AppView;
   isMobileMenuOpen: boolean;
   isSidebarOpen: boolean;
+  isHostedLimitedRuntime?: boolean;
   selectedAgent: Agent;
   agents: Agent[];
   setActiveView: React.Dispatch<React.SetStateAction<AppView>>;
@@ -34,6 +35,7 @@ export function Sidebar({
   activeView,
   isMobileMenuOpen,
   isSidebarOpen,
+  isHostedLimitedRuntime = false,
   selectedAgent,
   agents,
   setActiveView,
@@ -64,7 +66,14 @@ export function Sidebar({
                 <h1 className="text-xl font-black tracking-tighter flex items-center gap-1.5 text-white">
                   BIZBOT <span className="text-cyber-blue glow-text-blue">AI</span>
                 </h1>
-                <Badge color="blue">Aegis Command v2</Badge>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge color="blue">Aegis Command v2</Badge>
+                  {isHostedLimitedRuntime ? (
+                    <span title="Relay, shell, and Playwright require the desktop runtime.">
+                      <Badge color="gold">Hosted</Badge>
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">

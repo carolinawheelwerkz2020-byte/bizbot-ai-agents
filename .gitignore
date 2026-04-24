@@ -9,3 +9,6 @@ coverage/
 service-account-key.json
 .bizbot-*.json
 .browser-artifacts/
+
+# Firebase CLI local deploy cache (regenerated on each deploy)
+.firebase/

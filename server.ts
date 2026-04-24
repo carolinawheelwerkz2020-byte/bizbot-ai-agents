@@ -223,7 +223,13 @@ const MAX_FILES = 8;
 const MAX_TOTAL_INLINE_BYTES = 80 * 1024 * 1024;
 const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 const ALLOWED_MIME_PREFIXES = ["image/", "video/", "application/pdf", "text/", "application/json"];
-const AUTH_DISABLED = process.env.AUTH_DISABLED === "true";
+/** Auth bypass: never in production unless ALLOW_INSECURE_CLOUD_AUTH_BYPASS=true (double opt-in). */
+function isServerAuthBypassEnabled(): boolean {
+  if (process.env.AUTH_DISABLED !== "true") return false;
+  if (process.env.NODE_ENV !== "production") return true;
+  return process.env.ALLOW_INSECURE_CLOUD_AUTH_BYPASS === "true";
+}
+const AUTH_DISABLED = isServerAuthBypassEnabled();
 const DEFAULT_RELAY_ALLOWED_COMMANDS = [
   "npm",
   "npx",

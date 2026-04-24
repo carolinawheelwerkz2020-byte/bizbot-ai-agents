@@ -34,3 +34,21 @@ RELAY_ALLOWED_COMMANDS=*
 RELAY_ALLOW_SHELL_OPERATORS=true
 BIZBOT_AUTO_APPROVE_ACTIONS=register_tool,save_healing_recipe,run_healing_recipe
 ```
+
+## Security (auth bypass)
+
+- **Server / Cloud Functions:** `AUTH_DISABLED=true` alone does not disable auth when `NODE_ENV=production`. For a deliberate insecure deployment only, set `ALLOW_INSECURE_CLOUD_AUTH_BYPASS=true` as well (not recommended for public URLs).
+- **Web client:** `VITE_AUTH_DISABLED=true` skips Firebase Auth only in Vite dev. For a production build, the same requires `VITE_ALLOW_INSECURE_CLOUD_AUTH_BYPASS=true`.
+- Prefer **tight `ALLOWED_EMAILS`** and **Secret Manager** for API keys; avoid `firebase deploy --debug` in CI (logs can echo config).
+
+## Firebase deploy (functions)
+
+If the CLI times out during function discovery, use a longer timeout (the `deploy:functions` script sets 120s):
+
+`npm run deploy:functions`
+
+Typical full UI + API rollout:
+
+`npm run deploy:app` (hosting build, then functions).
+
+**GCP:** If deploy logs mention the Compute Engine API, enable **Compute Engine API** for the project in [Google Cloud Console → APIs & Services](https://console.cloud.google.com/apis/library/compute.googleapis.com) (or install `gcloud` and run `gcloud services enable compute.googleapis.com --project=YOUR_PROJECT_ID`).
