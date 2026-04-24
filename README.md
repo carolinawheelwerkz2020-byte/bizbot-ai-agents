@@ -8,6 +8,11 @@ This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/ff3bf5b0-7aab-4cf8-97e8-e0f8c60df3b4
 
+## Firebase web config (hosted + local)
+
+- **Firebase Hosting** (`*.web.app`): the app loads `/__/firebase/init.json` at runtime, so you do not have to inject `VITE_FIREBASE_*` into every CI build for production.
+- **Local `vite dev`**: set `VITE_FIREBASE_*` in `.env.local` (see `.env.example`).
+
 ## Run Locally
 
 **Prerequisites:**  Node.js
