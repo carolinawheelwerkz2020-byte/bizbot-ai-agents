@@ -48,9 +48,15 @@ BIZBOT_AUTO_APPROVE_ACTIONS=register_tool,save_healing_recipe,run_healing_recipe
 
 ## Firebase deploy (functions)
 
+Run deploy commands from the **repository root** (the folder that contains `firebase.json` and `package.json`). If you run them from `~`, the CLI will not see this project and filters like `functions:…` will fail.
+
 If the CLI times out during function discovery, use a longer timeout (the `deploy:functions` script sets 120s):
 
 `npm run deploy:functions`
+
+To deploy only the Hosting API function (this repo’s codebase is named `default` in `firebase.json`, so the CLI needs **`functions:default:bizbot_server`**, not `functions:bizbot_server`):
+
+`npm run deploy:function:bizbot`
 
 Typical full UI + API rollout:
 

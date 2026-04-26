@@ -21,6 +21,8 @@ const WORKER_PORT = Number(process.env.WORKER_PORT || 4317);
 const WORKER_HOST = process.env.WORKER_HOST || `http://localhost:${WORKER_PORT}`;
 const WORKER_ROOT = path.resolve(process.env.WORKER_ROOT || process.cwd());
 const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS || 15_000);
+const POLL_MS = Number(process.env.WORKER_POLL_MS || 2_500);
+const WORKER_POLL_MODE = process.env.WORKER_POLL_MODE === "true";
 const WORKER_COMMAND_TIMEOUT_MS = Number(process.env.WORKER_COMMAND_TIMEOUT_MS || 60_000);
 const WORKER_NETWORK_TIMEOUT_MS = Number(process.env.WORKER_NETWORK_TIMEOUT_MS || 30_000);
 
@@ -153,7 +155,90 @@ async function heartbeat(currentTask?: string, currentTaskId?: string) {
   });
 }
 
+async function executeWorkerRequest(request: ExecutionRequest) {
+  const taskLabel = request.taskId || request.kind;
+  const startedAt = Date.now();
+  try {
+    logWorkerEvent("worker.execute.start", {
+      workerId: WORKER_ID,
+      action: request.kind,
+      taskId: request.taskId,
+    });
+    await heartbeat(taskLabel, request.taskId);
+    const result = await executor.execute(request);
+    await heartbeat();
+    logWorkerEvent(result.ok ? "worker.execute.success" : "worker.execute.fail", {
+      workerId: WORKER_ID,
+      action: request.kind,
+      taskId: request.taskId,
+      durationMs: Date.now() - startedAt,
+      error: result.error,
+    });
+    return {
+      ...result,
+      workerId: WORKER_ID,
+      metadata: {
+        ...(result.metadata || {}),
+        platform: detectPlatform(),
+        workerRoot: WORKER_ROOT,
+      },
+    };
+  } catch (error) {
+    await heartbeat().catch(() => undefined);
+    const result = executionError({
+      error: error instanceof Error ? error.message : "Worker execution failed.",
+      type: "execution",
+      executor: "remote",
+      workerId: WORKER_ID,
+      durationMs: Date.now() - startedAt,
+    });
+    logWorkerEvent("worker.execute.fail", {
+      workerId: WORKER_ID,
+      action: request.kind,
+      taskId: request.taskId,
+      durationMs: result.durationMs,
+      error: result.error,
+    });
+    return result;
+  }
+}
+
+async function pollForWork() {
+  const response = await postToMain(`/api/workers/${encodeURIComponent(WORKER_ID)}/poll`, {});
+  const job = response?.job as { id: string; request: ExecutionRequest } | null | undefined;
+  if (!job?.id || !job.request) return;
+
+  const result = await executeWorkerRequest({
+    ...job.request,
+    taskId: job.request.taskId || job.id,
+  });
+  await postToMain(`/api/workers/${encodeURIComponent(WORKER_ID)}/jobs/${encodeURIComponent(job.id)}/result`, {
+    result,
+  });
+}
+
+async function startPollingWorker() {
+  console.log(`BizBot polling worker ${WORKER_ID} connected to ${MAIN_API_URL}`);
+  await registerWorker();
+  await heartbeat();
+  setInterval(() => {
+    pollForWork().catch((error) => {
+      console.error("[worker poll]", error instanceof Error ? error.message : error);
+    });
+  }, POLL_MS);
+  setInterval(() => {
+    heartbeat().catch((error) => {
+      console.error("[worker heartbeat]", error instanceof Error ? error.message : error);
+    });
+  }, HEARTBEAT_MS);
+}
+
 async function start() {
+  if (WORKER_POLL_MODE) {
+    await startPollingWorker();
+    return;
+  }
+
   const app = express();
   app.use(express.json({ limit: "100mb" }));
 
@@ -177,51 +262,8 @@ async function start() {
 
   app.post("/execute", async (req, res) => {
     const request = req.body as ExecutionRequest;
-    const taskLabel = request.taskId || request.kind;
-    const startedAt = Date.now();
-    try {
-      logWorkerEvent("worker.execute.start", {
-        workerId: WORKER_ID,
-        action: request.kind,
-        taskId: request.taskId,
-      });
-      await heartbeat(taskLabel, request.taskId);
-      const result = await executor.execute(request);
-      await heartbeat();
-      logWorkerEvent(result.ok ? "worker.execute.success" : "worker.execute.fail", {
-        workerId: WORKER_ID,
-        action: request.kind,
-        taskId: request.taskId,
-        durationMs: Date.now() - startedAt,
-        error: result.error,
-      });
-      res.status(result.ok ? 200 : 400).json({
-        ...result,
-        workerId: WORKER_ID,
-        metadata: {
-          ...(result.metadata || {}),
-          platform: detectPlatform(),
-          workerRoot: WORKER_ROOT,
-        },
-      });
-    } catch (error) {
-      await heartbeat().catch(() => undefined);
-      const result = executionError({
-        error: error instanceof Error ? error.message : "Worker execution failed.",
-        type: "execution",
-        executor: "remote",
-        workerId: WORKER_ID,
-        durationMs: Date.now() - startedAt,
-      });
-      logWorkerEvent("worker.execute.fail", {
-        workerId: WORKER_ID,
-        action: request.kind,
-        taskId: request.taskId,
-        durationMs: result.durationMs,
-        error: result.error,
-      });
-      res.status(500).json(result);
-    }
+    const result = await executeWorkerRequest(request);
+    res.status(result.ok ? 200 : 400).json(result);
   });
 
   app.listen(WORKER_PORT, async () => {

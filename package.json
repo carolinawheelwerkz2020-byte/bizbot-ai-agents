@@ -13,6 +13,7 @@
     "seo": "node scripts/seo-automation.js && node scripts/generate-sitemap.js",
     "deploy:hosting": "npm run build && npx firebase-tools deploy --only hosting",
     "deploy:functions": "FUNCTIONS_DISCOVERY_TIMEOUT=120 npx firebase-tools deploy --only functions",
+    "deploy:function:bizbot": "FUNCTIONS_DISCOVERY_TIMEOUT=120 npx firebase-tools deploy --only functions:default:bizbot_server",
     "deploy:firestore": "npx firebase-tools deploy --only firestore",
     "deploy:app": "npm run deploy:hosting && npm run deploy:functions",
     "gcp:enable-compute": "bash scripts/gcp-enable-compute.sh",

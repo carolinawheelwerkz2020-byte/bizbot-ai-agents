@@ -33,7 +33,10 @@
       },
       {
         "source": "/api/**",
-        "function": "bizbot_server"
+        "function": {
+          "functionId": "bizbot_server",
+          "region": "us-central1"
+        }
       },
       {
         "source": "**",

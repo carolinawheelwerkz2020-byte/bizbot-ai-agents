@@ -31,6 +31,155 @@ const APPROVAL_POLICY = {
 
 const CLOUD_LIMITATION_MESSAGE =
   "This feature is only available in the desktop/local runtime. The Firebase-hosted app supports chat, uploads, and cloud-safe history, but not local shell, file editing, package install, or Playwright browser control.";
+const WORKER_HEARTBEAT_TTL_MS = Number(process.env.WORKER_HEARTBEAT_TTL_MS || 45000);
+
+function getWorkerApiKey() {
+  return process.env.WORKER_API_KEY || process.env.BIZBOT_WORKER_API_KEY || "";
+}
+
+function getWorkerTokenFromHeaders(headers) {
+  const bearer = headers.authorization && headers.authorization.startsWith("Bearer ")
+    ? headers.authorization.slice(7)
+    : "";
+  const workerHeader = headers["x-worker-api-key"];
+  return bearer || (Array.isArray(workerHeader) ? workerHeader[0] : workerHeader) || "";
+}
+
+function isWorkerRequestAuthorized(headers) {
+  const expected = getWorkerApiKey();
+  if (!expected) {
+    return { ok: true, devFallback: true };
+  }
+  return { ok: getWorkerTokenFromHeaders(headers) === expected, devFallback: false };
+}
+
+function normalizeWorkerDoc(id, data) {
+  const lastHeartbeatAt = data.lastHeartbeatAt || data.lastHeartbeat || new Date(0).toISOString();
+  const ageMs = Date.now() - new Date(lastHeartbeatAt).getTime();
+  const online = Number.isFinite(ageMs) && ageMs <= WORKER_HEARTBEAT_TTL_MS;
+  return {
+    id,
+    name: data.name || id,
+    platform: data.platform || "unknown",
+    status: online ? (data.status || "online") : "offline",
+    online,
+    capabilities: Array.isArray(data.capabilities) ? data.capabilities : [],
+    verifiedCapabilities: Array.isArray(data.verifiedCapabilities) ? data.verifiedCapabilities : (Array.isArray(data.capabilities) ? data.capabilities : []),
+    lastHeartbeat: data.lastHeartbeat || lastHeartbeatAt,
+    lastHeartbeatAt,
+    lastHeartbeatAgeMs: Number.isFinite(ageMs) ? ageMs : null,
+    failedTaskCount: Number(data.failedTaskCount || data.failedTasksCount || 0),
+    currentTask: data.currentTask,
+    currentTaskId: data.currentTaskId,
+    authMode: getWorkerApiKey() ? "api-key" : "dev-fallback",
+    endpoint: data.endpoint,
+    host: data.host,
+    recentExecutionSummary: Array.isArray(data.recentExecutionSummary) ? data.recentExecutionSummary.slice(-10) : [],
+  };
+}
+
+async function listWorkersFromFirestore() {
+  const snapshot = await admin.firestore().collection("bizbot_workers").limit(100).get().catch(() => null);
+  if (!snapshot) return [];
+  return snapshot.docs.map((doc) => normalizeWorkerDoc(doc.id, doc.data()));
+}
+
+async function selectCompatibleWorker(requiredCapabilities, preferredWorkerId) {
+  const workers = await listWorkersFromFirestore();
+  const candidates = (preferredWorkerId ? workers.filter((worker) => worker.id === preferredWorkerId) : workers)
+    .filter((worker) => worker.online)
+    .filter((worker) => requiredCapabilities.every((capability) => (worker.verifiedCapabilities || worker.capabilities).includes(capability)))
+    .sort((left, right) => {
+      const failureDelta = (left.failedTaskCount || 0) - (right.failedTaskCount || 0);
+      if (failureDelta !== 0) return failureDelta;
+      return new Date(right.lastHeartbeatAt).getTime() - new Date(left.lastHeartbeatAt).getTime();
+    });
+  return candidates[0];
+}
+
+async function executeOnWorker(worker, request) {
+  const timeoutMs = Number(process.env.REMOTE_WORKER_TIMEOUT_MS || 60000);
+  const startedAt = Date.now();
+  const jobRef = admin.firestore().collection("bizbot_worker_jobs").doc(`job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+  await jobRef.set({
+    id: jobRef.id,
+    workerId: worker.id,
+    request,
+    status: "queued",
+    createdAt: new Date().toISOString(),
+  });
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const snapshot = await jobRef.get();
+    const data = snapshot.data() || {};
+    if (data.status === "completed") {
+      return data.result || { ok: true, executor: "remote", workerId: worker.id };
+    }
+    if (data.status === "failed") {
+      return data.result || {
+        ok: false,
+        error: "Worker job failed.",
+        type: "execution",
+        executor: "remote",
+        workerId: worker.id,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  await jobRef.set({
+    status: "failed",
+    completedAt: new Date().toISOString(),
+    result: {
+      ok: false,
+      error: "Worker job timed out waiting for result.",
+      type: "timeout",
+      executor: "remote",
+      workerId: worker.id,
+      durationMs: Date.now() - startedAt,
+    },
+  }, { merge: true });
+
+  return {
+    ok: false,
+    error: "Worker job timed out waiting for result.",
+    type: "timeout",
+    executor: "remote",
+    workerId: worker.id,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+async function executeOnWorkerDirect(worker, request) {
+  if (!worker || !worker.endpoint) {
+    throw new Error("No worker endpoint is available for this task.");
+  }
+  const headers = { "Content-Type": "application/json" };
+  const workerApiKey = getWorkerApiKey();
+  if (workerApiKey) {
+    headers.Authorization = `Bearer ${workerApiKey}`;
+  }
+
+  const response = await fetch(new URL("/execute", worker.endpoint), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(request),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok && !payload.ok) {
+    throw new Error(payload.error || `Worker execution failed with ${response.status}.`);
+  }
+  return payload;
+}
+
+function relayCapabilitiesForTool(name) {
+  if (name === "bash") return ["shell"];
+  if (name === "read_file") return ["filesystem"];
+  if (name === "write_file") return ["filesystem"];
+  if (name === "edit_file") return ["filesystem"];
+  return [];
+}
 
 function getGmailScannerSetupSteps() {
   return [
@@ -308,6 +457,10 @@ async function requireAuth(req, res, next) {
     if (isCloudAuthBypassEnabled()) return next();
     const rel = (req.originalUrl && req.originalUrl.split("?")[0]) || "";
     if (req.method === "GET" && (rel === "/api" || rel === "/api/")) return next();
+    if (rel.startsWith("/api/workers/")) {
+      const workerAuth = isWorkerRequestAuthorized(req.headers);
+      if (workerAuth.ok) return next();
+    }
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Sign in required." });
@@ -436,6 +589,320 @@ const apiRouter = express.Router();
 
 apiRouter.get("/", (req, res) => {
   res.send("BizBot API is Running! 🤖");
+});
+
+apiRouter.post("/workers/register", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const id = String(payload.id || `worker-${Date.now()}`);
+    const now = new Date().toISOString();
+    const entry = {
+      id,
+      name: String(payload.name || id),
+      platform: String(payload.platform || "unknown"),
+      status: "online",
+      capabilities: Array.isArray(payload.capabilities) ? payload.capabilities.map(String) : [],
+      verifiedCapabilities: Array.isArray(payload.capabilities) ? payload.capabilities.map(String) : [],
+      endpoint: typeof payload.endpoint === "string" ? payload.endpoint : null,
+      host: typeof payload.host === "string" ? payload.host : null,
+      metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+      currentTask: null,
+      currentTaskId: null,
+      failedTaskCount: 0,
+      lastHeartbeat: now,
+      lastHeartbeatAt: now,
+    };
+    await admin.firestore().collection("bizbot_workers").doc(id).set(entry, { merge: true });
+    res.json(entry);
+  } catch (error) {
+    console.error("worker register", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to register worker." });
+  }
+});
+
+apiRouter.post("/workers/:id/heartbeat", async (req, res) => {
+  try {
+    const id = String(req.params.id || "");
+    const now = new Date().toISOString();
+    await admin.firestore().collection("bizbot_workers").doc(id).set({
+      status: String(req.body && req.body.status ? req.body.status : "online"),
+      currentTask: typeof req.body?.currentTask === "string" ? req.body.currentTask : null,
+      currentTaskId: typeof req.body?.currentTaskId === "string" ? req.body.currentTaskId : null,
+      lastHeartbeat: now,
+      lastHeartbeatAt: now,
+    }, { merge: true });
+    const snapshot = await admin.firestore().collection("bizbot_workers").doc(id).get();
+    res.json(normalizeWorkerDoc(id, snapshot.data() || {}));
+  } catch (error) {
+    console.error("worker heartbeat", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to update worker heartbeat." });
+  }
+});
+
+apiRouter.get("/workers", async (_req, res) => {
+  try {
+    res.json({ workers: await listWorkersFromFirestore() });
+  } catch (error) {
+    console.error("workers list", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load workers." });
+  }
+});
+
+apiRouter.get("/workers/:id", async (req, res) => {
+  try {
+    const snapshot = await admin.firestore().collection("bizbot_workers").doc(String(req.params.id || "")).get();
+    if (!snapshot.exists) {
+      return res.status(404).json({ error: "Worker not found." });
+    }
+    res.json(normalizeWorkerDoc(snapshot.id, snapshot.data() || {}));
+  } catch (error) {
+    console.error("worker get", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load worker." });
+  }
+});
+
+apiRouter.post("/workers/:id/run", async (req, res) => {
+  try {
+    const worker = await selectCompatibleWorker([], String(req.params.id || ""));
+    if (!worker) {
+      return res.status(404).json({ error: "Worker unavailable." });
+    }
+    const result = await executeOnWorker(worker, req.body || {});
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    console.error("worker run", error && error.message ? error.message : error);
+    res.status(500).json({ error: error && error.message ? error.message : "Unable to run worker task." });
+  }
+});
+
+apiRouter.post("/workers/:id/poll", async (req, res) => {
+  try {
+    const workerId = String(req.params.id || "");
+    const now = new Date().toISOString();
+    await admin.firestore().collection("bizbot_workers").doc(workerId).set({
+      status: "online",
+      lastHeartbeat: now,
+      lastHeartbeatAt: now,
+    }, { merge: true });
+
+    const snapshot = await admin.firestore()
+      .collection("bizbot_worker_jobs")
+      .where("workerId", "==", workerId)
+      .where("status", "==", "queued")
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return res.json({ job: null });
+    }
+
+    const doc = snapshot.docs[0];
+    const job = doc.data();
+    await doc.ref.set({
+      status: "running",
+      startedAt: now,
+    }, { merge: true });
+    await admin.firestore().collection("bizbot_workers").doc(workerId).set({
+      currentTask: job.request && job.request.kind ? String(job.request.kind) : "worker job",
+      currentTaskId: doc.id,
+      lastHeartbeat: now,
+      lastHeartbeatAt: now,
+    }, { merge: true });
+
+    res.json({
+      job: {
+        id: doc.id,
+        request: job.request,
+        createdAt: job.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("worker poll", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to poll worker job." });
+  }
+});
+
+apiRouter.post("/workers/:id/jobs/:jobId/result", async (req, res) => {
+  try {
+    const workerId = String(req.params.id || "");
+    const jobId = String(req.params.jobId || "");
+    const result = req.body && req.body.result ? req.body.result : req.body;
+    const succeeded = !(result && result.ok === false);
+    const summary = {
+      jobId,
+      workerId,
+      ok: succeeded,
+      action: result && result.kind ? result.kind : null,
+      summary: succeeded ? "Worker job completed." : String((result && result.error) || "Worker job failed."),
+      timestamp: new Date().toISOString(),
+    };
+    await admin.firestore().collection("bizbot_worker_jobs").doc(jobId).set({
+      workerId,
+      status: succeeded ? "completed" : "failed",
+      result,
+      completedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    const workerUpdate = {
+      status: "online",
+      currentTask: null,
+      currentTaskId: null,
+      lastHeartbeat: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      recentExecutionSummary: admin.firestore.FieldValue.arrayUnion(summary),
+    };
+    if (!succeeded) {
+      workerUpdate.failedTaskCount = admin.firestore.FieldValue.increment(1);
+    }
+    await admin.firestore().collection("bizbot_workers").doc(workerId).set(workerUpdate, { merge: true });
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("worker result", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to store worker result." });
+  }
+});
+
+apiRouter.post("/relay/exec", async (req, res) => {
+  try {
+    const worker = await selectCompatibleWorker(["shell"]);
+    if (!worker) {
+      return res.status(503).json({
+        ok: false,
+        error: "No shell-capable worker is online. Start a Mac, Windows, or Linux BizBot worker to enable hosted relay commands.",
+        type: "capability_missing",
+        executor: "unavailable",
+      });
+    }
+    const result = await executeOnWorker(worker, {
+      kind: "command",
+      command: String(req.body && req.body.command ? req.body.command : ""),
+      workdir: typeof req.body?.workdir === "string" ? req.body.workdir : undefined,
+    });
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Hosted relay command failed.",
+      type: "execution",
+      executor: "remote",
+    });
+  }
+});
+
+apiRouter.post("/relay/execute", async (req, res) => {
+  try {
+    const request = req.body || {};
+    const requiredCapabilities = Array.isArray(request.requiredCapabilities)
+      ? request.requiredCapabilities
+      : [];
+    const inferredCapabilities = requiredCapabilities.length > 0
+      ? requiredCapabilities
+      : request.kind === "command"
+        ? ["shell"]
+        : request.kind === "file.read" || request.kind === "file.write" || request.kind === "file.edit"
+          ? ["filesystem"]
+          : [];
+    const worker = await selectCompatibleWorker(inferredCapabilities, request.preferredWorkerId);
+    if (!worker) {
+      return res.status(503).json({
+        ok: false,
+        error: "No suitable worker is online for this hosted relay request.",
+        type: "capability_missing",
+        executor: "unavailable",
+      });
+    }
+    const result = await executeOnWorker(worker, request);
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Hosted relay execution failed.",
+      type: "execution",
+      executor: "remote",
+    });
+  }
+});
+
+apiRouter.get("/relay/read", async (req, res) => {
+  try {
+    const worker = await selectCompatibleWorker(["filesystem"]);
+    if (!worker) {
+      return res.status(503).json({
+        ok: false,
+        error: "No filesystem-capable worker is online. Start a BizBot worker to enable hosted file reads.",
+        type: "capability_missing",
+        executor: "unavailable",
+      });
+    }
+    const result = await executeOnWorker(worker, {
+      kind: "file.read",
+      path: String(req.query.path || ""),
+    });
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Hosted relay read failed.",
+      type: "execution",
+      executor: "remote",
+    });
+  }
+});
+
+apiRouter.post("/relay/write", async (req, res) => {
+  try {
+    const worker = await selectCompatibleWorker(["filesystem"]);
+    if (!worker) {
+      return res.status(503).json({
+        ok: false,
+        error: "No filesystem-capable worker is online. Start a BizBot worker to enable hosted file writes.",
+        type: "capability_missing",
+        executor: "unavailable",
+      });
+    }
+    const result = await executeOnWorker(worker, {
+      kind: "file.write",
+      path: String(req.body && req.body.path ? req.body.path : ""),
+      content: String(req.body && req.body.content ? req.body.content : ""),
+    });
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Hosted relay write failed.",
+      type: "execution",
+      executor: "remote",
+    });
+  }
+});
+
+apiRouter.post("/relay/edit", async (req, res) => {
+  try {
+    const worker = await selectCompatibleWorker(["filesystem"]);
+    if (!worker) {
+      return res.status(503).json({
+        ok: false,
+        error: "No filesystem-capable worker is online. Start a BizBot worker to enable hosted file edits.",
+        type: "capability_missing",
+        executor: "unavailable",
+      });
+    }
+    const result = await executeOnWorker(worker, {
+      kind: "file.edit",
+      path: String(req.body && req.body.path ? req.body.path : ""),
+      oldString: String(req.body && req.body.oldString ? req.body.oldString : ""),
+      newString: String(req.body && req.body.newString ? req.body.newString : ""),
+    });
+    res.status(result && result.ok === false ? 400 : 200).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "Hosted relay edit failed.",
+      type: "execution",
+      executor: "remote",
+    });
+  }
 });
 
 apiRouter.post("/upload", upload.single("file"), async (req, res) => {
@@ -819,6 +1286,7 @@ apiRouter.post("/agents", async (req, res) => {
 apiRouter.get("/diagnostics/server", async (req, res) => {
   try {
     const overview = await getOverviewForCloud(req);
+    const workers = await listWorkersFromFirestore();
     res.json({
       storageMode: "firestore-cloud",
       workerAuthMode: process.env.WORKER_API_KEY ? "api-key" : "dev-fallback",
@@ -828,7 +1296,7 @@ apiRouter.get("/diagnostics/server", async (req, res) => {
         remoteWorkerMs: 60000,
         browserActionMs: 20000,
       },
-      onlineWorkers: [],
+      onlineWorkers: workers.filter((worker) => worker.online),
       pendingApprovals: overview.telemetry.pendingApprovals,
       recentExecutionFailures: [],
     });
@@ -838,15 +1306,29 @@ apiRouter.get("/diagnostics/server", async (req, res) => {
   }
 });
 
-apiRouter.get("/diagnostics/workers", (_req, res) => {
-  res.json({
-    workers: [],
-    recentExecutionFailures: [],
-  });
+apiRouter.get("/diagnostics/workers", async (_req, res) => {
+  try {
+    res.json({
+      workers: await listWorkersFromFirestore(),
+      recentExecutionFailures: [],
+    });
+  } catch (error) {
+    console.error("diagnostics workers", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load worker diagnostics." });
+  }
 });
 
-apiRouter.get("/diagnostics/workers/:id", (req, res) => {
-  res.status(404).json({ error: `Worker ${req.params.id} is not registered in hosted Firebase mode.` });
+apiRouter.get("/diagnostics/workers/:id", async (req, res) => {
+  try {
+    const snapshot = await admin.firestore().collection("bizbot_workers").doc(String(req.params.id || "")).get();
+    if (!snapshot.exists) {
+      return res.status(404).json({ error: `Worker ${req.params.id} is not registered.` });
+    }
+    res.json(normalizeWorkerDoc(snapshot.id, snapshot.data() || {}));
+  } catch (error) {
+    console.error("diagnostics worker", error && error.message ? error.message : error);
+    res.status(500).json({ error: "Unable to load worker diagnostics." });
+  }
 });
 
 apiRouter.post("/diagnostics/test", (_req, res) => {
@@ -1008,5 +1490,6 @@ exports.bizbot_server = onRequest({
     "GMAIL_CLIENT_ID",
     "GMAIL_CLIENT_SECRET",
     "GMAIL_REFRESH_TOKEN",
+    "WORKER_API_KEY",
   ],
 }, app);
