@@ -21,9 +21,9 @@ export function DocsView() {
             </div>
             <Badge color="blue">System Guide</Badge>
           </div>
-          <h2 className="text-5xl font-serif font-black tracking-tighter italic">BizBot Docs</h2>
+          <h2 className="text-4xl lg:text-5xl font-black tracking-tight">Help</h2>
           <p className="text-zinc-500 text-lg max-w-2xl">
-            Quick reference for the controls in Aegis Command. Every button on the shell now routes somewhere useful.
+            Quick reference for the simplified BizBot controls. Every visible button routes to a real working area.
           </p>
         </div>
 
@@ -42,33 +42,33 @@ export function DocsView() {
 
           <Card className="p-7 space-y-4">
             <Cpu className="text-cyber-blue" />
-            <h3 className="text-xl font-black">Directives</h3>
+            <h3 className="text-xl font-black">Chat</h3>
             <p className="text-sm text-zinc-500 leading-relaxed">
-              Main chat workspace. Pick an agent from the Neural Network list, type a directive, attach files, or use voice input.
+              Main assistant workspace. Pick an agent, type a request, attach files, or use voice input.
             </p>
           </Card>
 
           <Card className="p-7 space-y-4">
             <Monitor className="text-cyber-lime" />
-            <h3 className="text-xl font-black">Agent Roster</h3>
+            <h3 className="text-xl font-black">Agents</h3>
             <p className="text-sm text-zinc-500 leading-relaxed">
-              Browse every specialized BizBot agent. The arrow on each card selects that agent and opens Directives.
+              Browse every specialized BizBot agent. Select one to make it the active helper in Chat.
             </p>
           </Card>
 
           <Card className="p-7 space-y-4">
             <GitBranch className="text-cyber-lime" />
-            <h3 className="text-xl font-black">Pipelines</h3>
+            <h3 className="text-xl font-black">Workstream</h3>
             <p className="text-sm text-zinc-500 leading-relaxed">
-              Launch built-in multi-agent workflows. Architect Workflow opens a directive prompt for creating a new pipeline.
+              Launch built-in multi-agent workflows and follow how agents hand work to one another.
             </p>
           </Card>
 
           <Card className="p-7 space-y-4">
             <Layers className="text-cyber-blue" />
-            <h3 className="text-xl font-black">Auxiliary / Config</h3>
+            <h3 className="text-xl font-black">Tools / System</h3>
             <p className="text-sm text-zinc-500 leading-relaxed">
-              Operational control center for approvals, registered tools, schedules, browser traces, relay policy, and worker status.
+              Operational control center for approvals, registered tools, schedules, browser traces, relay policy, worker status, and diagnostics.
             </p>
           </Card>
 

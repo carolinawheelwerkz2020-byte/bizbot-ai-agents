@@ -621,11 +621,11 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
               <div className="p-2 bg-amber-500/10 rounded-lg text-amber-500">
                 <Layers size={24} />
               </div>
-              <Badge color="gold">Autonomy Control Surface</Badge>
+              <Badge color="gold">Tools & System</Badge>
             </div>
-            <h2 className="text-4xl lg:text-5xl font-serif font-black tracking-tighter italic">Enterprise Toolbox</h2>
+            <h2 className="text-4xl lg:text-5xl font-black tracking-tight">Tools</h2>
             <p className="text-zinc-500 font-medium text-base lg:text-lg max-w-3xl">
-              Monitor what the agents can do, add constrained tools, install approved packages, and trigger recovery routines without leaving the browser.
+              Check workers, approvals, schedules, Gmail tools, and safe system actions without digging through logs.
             </p>
           </div>
           <Button
@@ -634,7 +634,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             loading={isRefreshing}
             onClick={() => void refreshOverview(true)}
           >
-            Refresh Control Surface
+            Refresh Tools
           </Button>
         </div>
 
@@ -681,7 +681,7 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
               <div>
                 <h3 className="text-2xl font-black tracking-tight">Cloud Runtime Mode</h3>
                 <p className="text-sm text-zinc-400 mt-2">
-                  This Firebase deployment supports chat, uploads, and cloud-synced run history. Local shell tools, file editing, package installs, self-heal, and Playwright browser automation stay disabled here because they require the desktop runtime.
+              This hosted app supports chat, uploads, cloud-synced history, and worker-routed execution. Start a trusted Mac or Windows worker when agents need shell, files, npm, or browser automation.
                 </p>
               </div>
               <Badge color="gold">Hosted Firebase</Badge>
@@ -1068,10 +1068,10 @@ export function ToolboxView({ handleLaunchTool, onLog }: ToolboxViewProps) {
             <Card className="p-6 lg:p-8 space-y-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-2xl font-black tracking-tight">Quick Launch Modules</h3>
-                  <p className="text-sm text-zinc-500 mt-2">Keep the original specialist launchers close while the autonomy controls grow around them.</p>
+                  <h3 className="text-2xl font-black tracking-tight">Quick Launch</h3>
+                  <p className="text-sm text-zinc-500 mt-2">Start common business helpers without crowding the main sidebar.</p>
                 </div>
-                <Badge color="blue">Direct Agent Launch</Badge>
+                <Badge color="blue">Agent Shortcuts</Badge>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

@@ -28,9 +28,9 @@ export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: Workflow
               </div>
               <Badge color="lime">Autonomous Orchestration</Badge>
             </div>
-            <h2 className="text-5xl font-serif font-black tracking-tighter italic">Operational Pipelines</h2>
+            <h2 className="text-4xl lg:text-5xl font-black tracking-tight">Workstream</h2>
             <p className="text-zinc-500 font-medium text-lg max-w-xl">
-              Chain specialized agents into powerful automated sequences to achieve complex business outcomes.
+              Follow multi-agent work from start to finish, then launch the safe workflows that help run the business.
             </p>
           </div>
           <Button
@@ -39,7 +39,7 @@ export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: Workflow
             icon={Plus}
             onClick={onArchitectWorkflow}
           >
-            Architect Workflow
+            Build Workflow
           </Button>
         </div>
 
@@ -51,7 +51,7 @@ export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: Workflow
                   <WorkflowIcon size={32} />
                 </div>
                 <div className="px-3 py-1.5 bg-cyber-lime/10 border border-cyber-lime/20 rounded-xl text-[10px] font-black text-cyber-lime uppercase tracking-widest">
-                  Built-in Protocol
+                  Built-in
                 </div>
               </div>
 
@@ -61,7 +61,7 @@ export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: Workflow
               </div>
 
               <div className="space-y-4">
-                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-700">Workflow Sequence</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-700">Agent Sequence</p>
                 <div className="flex items-center gap-3">
                   {workflow.steps.map((step, idx) => {
                     const stepAgent = AGENTS.find((agent) => agent.id === step.agentId);
@@ -87,7 +87,7 @@ export function WorkflowsView({ executeWorkflow, onArchitectWorkflow }: Workflow
                   icon={Play}
                   onClick={() => executeWorkflow(workflow)}
                 >
-                  Deploy Pipeline
+                  Start Workflow
                 </Button>
               </div>
             </Card>

@@ -110,11 +110,11 @@ export function AgentsView({ setActiveView, setSelectedAgent, agents, isHostedLi
               <div className="p-2 bg-cyber-blue/10 rounded-lg text-cyber-blue">
                 <Bot size={24} />
               </div>
-              <Badge color="blue">Global Intelligence Network</Badge>
+              <Badge color="blue">Agent Team</Badge>
             </div>
-            <h2 className="text-5xl font-serif font-black tracking-tighter italic">Neural Roster</h2>
+            <h2 className="text-4xl lg:text-5xl font-black tracking-tight">Agents</h2>
             <p className="text-zinc-500 font-medium text-lg max-w-xl">
-              Deploy specialized AI protocols to manage every facet of your business operations.
+              Keep the main sidebar simple, and manage the full specialist team here when you need a specific helper.
             </p>
             <div className="flex flex-wrap gap-2">
               {isHostedLimitedRuntime && (
@@ -129,10 +129,10 @@ export function AgentsView({ setActiveView, setSelectedAgent, agents, isHostedLi
           </div>
           <div className="flex flex-wrap gap-3">
             <Button variant="secondary" className="!py-5 !px-8 !text-[11px]" icon={Gauge} onClick={() => setActiveView('toolbox')}>
-              Worker Diagnostics
+              Worker Status
             </Button>
             <Button variant="primary" className="!py-5 !px-10 !text-[11px]" icon={Plus} onClick={initializeAgent}>
-              Initialize Agent
+              Add Agent
             </Button>
           </div>
         </div>

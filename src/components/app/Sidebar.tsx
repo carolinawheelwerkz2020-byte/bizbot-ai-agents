@@ -9,7 +9,7 @@ import {
   GitBranch,
   Layers,
   Minimize2,
-  Settings,
+  Settings2,
   X,
 } from 'lucide-react';
 import type { Agent } from '../../services/gemini';
@@ -45,29 +45,32 @@ export function Sidebar({
   systemLogs,
   approvalSummary,
 }: SidebarProps) {
+  const visibleAgents = agents.slice(0, 4);
+  const hiddenAgentCount = Math.max(agents.length - visibleAgents.length, 0);
+
   return (
     <AnimatePresence initial={false}>
       {isSidebarOpen && (
         <motion.aside
-          initial={{ width: 0, x: -320 }}
-          animate={{ width: 320, x: 0 }}
-          exit={{ width: 0, x: -320 }}
+          initial={{ width: 0, x: -292 }}
+          animate={{ width: 292, x: 0 }}
+          exit={{ width: 0, x: -292 }}
           className={cn(
             'fixed inset-y-0 left-0 z-50 lg:relative h-full bg-void/80 backdrop-blur-3xl border-r border-white/5 flex flex-col overflow-hidden shadow-2xl transition-all duration-500',
             !isMobileMenuOpen && 'hidden lg:flex'
           )}
         >
-          <div className="p-8 flex items-center justify-between">
+          <div className="p-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-gradient-to-tr from-cyber-blue to-blue-400 rounded-xl flex items-center justify-center text-white shadow-[0_0_25px_rgba(59,130,246,0.3)] border border-white/20">
-                <Cpu size={22} className="animate-pulse" />
+              <div className="w-10 h-10 bg-gradient-to-tr from-cyber-blue to-blue-400 rounded-2xl flex items-center justify-center text-white shadow-[0_0_25px_rgba(59,130,246,0.22)] border border-white/20">
+                <Cpu size={21} />
               </div>
               <div>
                 <h1 className="text-xl font-black tracking-tighter flex items-center gap-1.5 text-white">
                   BIZBOT <span className="text-cyber-blue glow-text-blue">AI</span>
                 </h1>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge color="blue">Aegis Command v2</Badge>
+                  <Badge color="blue">Business Hub</Badge>
                   {isHostedLimitedRuntime ? (
                     <span title="Relay, shell, and Playwright require the desktop runtime.">
                       <Badge color="gold">Hosted</Badge>
@@ -86,15 +89,15 @@ export function Sidebar({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-6 space-y-8 custom-scrollbar pb-10">
-            <div className="space-y-1">
-              <p className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-600">Core Matrix</p>
-              <GlassButton active={activeView === 'chat'} onClick={() => { setActiveView('chat'); setIsMobileMenuOpen(false); }} icon={Activity}>Directives</GlassButton>
-              <GlassButton active={activeView === 'agents'} onClick={() => { setActiveView('agents'); setIsMobileMenuOpen(false); }} icon={Bot}>Agent Roster</GlassButton>
-              <GlassButton active={activeView === 'workflows'} onClick={() => { setActiveView('workflows'); setIsMobileMenuOpen(false); }} icon={GitBranch}>Pipelines</GlassButton>
+          <div className="flex-1 overflow-y-auto px-5 space-y-6 custom-scrollbar pb-8">
+            <div className="space-y-1.5">
+              <p className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.22em] text-zinc-600">Main Menu</p>
+              <GlassButton active={activeView === 'chat'} onClick={() => { setActiveView('chat'); setIsMobileMenuOpen(false); }} icon={Activity}>Chat</GlassButton>
+              <GlassButton active={activeView === 'workflows'} onClick={() => { setActiveView('workflows'); setIsMobileMenuOpen(false); }} icon={GitBranch}>Workstream</GlassButton>
+              <GlassButton active={activeView === 'agents'} onClick={() => { setActiveView('agents'); setIsMobileMenuOpen(false); }} icon={Bot}>Agents</GlassButton>
               <GlassButton active={activeView === 'toolbox'} onClick={() => { setActiveView('toolbox'); setIsMobileMenuOpen(false); }} icon={Layers}>
                 <span className="flex items-center gap-2">
-                  Auxiliary
+                  Tools
                   {approvalSummary.pendingCount > 0 && (
                     <span className="inline-flex min-w-5 h-5 px-1.5 items-center justify-center rounded-full bg-cyber-rose/20 border border-cyber-rose/30 text-cyber-rose text-[9px] font-black">
                       {approvalSummary.pendingCount}
@@ -102,15 +105,22 @@ export function Sidebar({
                   )}
                 </span>
               </GlassButton>
+              <GlassButton active={activeView === 'docs'} onClick={() => { setActiveView('docs'); setIsMobileMenuOpen(false); }} icon={BookOpen}>Help</GlassButton>
             </div>
 
-            <div className="rounded-2xl border border-cyber-rose/10 bg-cyber-rose/5 px-4 py-3">
+            <button
+              onClick={() => {
+                setActiveView('toolbox');
+                setIsMobileMenuOpen(false);
+              }}
+              className="w-full rounded-2xl border border-cyber-rose/10 bg-cyber-rose/5 px-4 py-3 text-left transition hover:border-cyber-rose/25 hover:bg-cyber-rose/10"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-cyber-rose/10 text-cyber-rose flex items-center justify-center border border-cyber-rose/20">
                   <AlertTriangle size={16} />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-500">Approvals</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-500">Approvals</div>
                   <div className="text-sm font-black text-white">
                     {approvalSummary.pendingCount > 0
                       ? `${approvalSummary.pendingCount} waiting for review`
@@ -118,12 +128,25 @@ export function Sidebar({
                   </div>
                 </div>
               </div>
-            </div>
+            </button>
 
             <div className="space-y-4">
-              <p className="px-2 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-600">Neural Network</p>
+              <div className="flex items-center justify-between px-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-600">Active Agents</p>
+                {hiddenAgentCount > 0 && (
+                  <button
+                    onClick={() => {
+                      setActiveView('agents');
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="text-[10px] font-black uppercase tracking-widest text-cyber-blue hover:text-white"
+                  >
+                    +{hiddenAgentCount} more
+                  </button>
+                )}
+              </div>
               <div className="space-y-1">
-                {agents.map((agent) => (
+                {visibleAgents.map((agent) => (
                   <button
                     key={agent.id}
                     onClick={() => {
@@ -150,9 +173,9 @@ export function Sidebar({
             </div>
 
             <div className="space-y-3">
-              <p className="px-2 text-[10px] font-black uppercase tracking-[0.25em] text-zinc-600">Console Output</p>
+              <p className="px-2 text-[10px] font-black uppercase tracking-[0.22em] text-zinc-600">Recent Activity</p>
               <div className="bg-black/40 rounded-2xl p-4 border border-white/5 font-mono text-[10px] space-y-2 overflow-hidden glass-dark">
-                {systemLogs.map((log, i) => (
+                {systemLogs.slice(-4).map((log, i) => (
                   <div
                     key={i}
                     className={cn(
@@ -168,7 +191,7 @@ export function Sidebar({
             </div>
           </div>
 
-          <div className="p-6 border-t border-white/5 mt-auto bg-void/50">
+          <div className="p-5 border-t border-white/5 mt-auto bg-void/50">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-zinc-800 to-zinc-700 flex items-center justify-center text-xs font-black border border-white/10">BS</div>
@@ -186,7 +209,7 @@ export function Sidebar({
                 }}
                 className="flex items-center justify-center gap-2 py-2 bg-white/5 rounded-lg text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-all"
               >
-                <Settings size={12} /> Config
+                <Settings2 size={12} /> System
               </button>
               <button
                 onClick={() => {

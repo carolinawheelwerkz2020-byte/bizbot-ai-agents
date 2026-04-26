@@ -4,8 +4,6 @@ import {
   Menu,
   Settings2,
   ShieldAlert,
-  Globe,
-  Terminal,
   Maximize2,
   Moon,
   Sun,
@@ -429,7 +427,7 @@ export default function App() {
   const recognitionRef = useRef<any>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([
-    { msg: "System initialized. Aegis Protocol v2.0 online.", type: 'info' }
+    { msg: "BizBot workspace ready.", type: 'info' }
   ]);
   const [approvalSummary, setApprovalSummary] = useState<ApprovalSummary>({ pendingCount: 0 });
   const [runSummaries, setRunSummaries] = useState<RunSummary[]>([]);
@@ -826,7 +824,7 @@ export default function App() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      addLog('Neural Link: Listening for voice input...', 'info');
+      addLog('Voice input listening...', 'info');
     };
 
     recognition.onresult = (event: any) => {
@@ -1054,7 +1052,7 @@ export default function App() {
     setSelectedAgent(routerAgent);
     setInput('Help me architect a new multi-agent workflow for Carolina Wheel Werkz. Ask only for the missing details, then produce a pipeline plan.');
     setActiveView('chat');
-    addLog('Workflow architect prompt staged in Directives.', 'agent');
+    addLog('Workflow architect prompt staged in Chat.', 'agent');
   };
 
   return (
@@ -1097,7 +1095,7 @@ export default function App() {
         )}
 
         {/* Header Bar */}
-        <header className="h-20 flex items-center justify-between px-6 lg:px-10 relative z-30 bg-void/20 backdrop-blur-md border-b border-white/5">
+        <header className="h-20 flex items-center justify-between px-5 lg:px-8 relative z-30 bg-void/20 backdrop-blur-md border-b border-white/5">
           <div className="flex items-center gap-3 lg:gap-5">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
@@ -1118,21 +1116,12 @@ export default function App() {
               </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-cyber-lime shadow-[0_0_10px_#A3E635] animate-pulse" />
-                <span className="text-[10px] text-zinc-500 uppercase tracking-[0.25em] font-black">Neural Processor Online</span>
+                <span className="text-[10px] text-zinc-500 uppercase tracking-[0.22em] font-black">Ready to help</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden lg:flex items-center gap-6 px-6 py-2 bg-white/5 rounded-2xl border border-white/5 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-              <div className="flex items-center gap-2">
-                <Terminal size={14} className="text-cyber-blue" /> Terminal v2
-              </div>
-              <div className="w-px h-3 bg-white/10" />
-              <div className="flex items-center gap-2">
-                <Globe size={14} className="text-cyber-lime" /> Global Sync
-              </div>
-            </div>
+          <div className="flex items-center gap-2 sm:gap-3">
             {approvalSummary.pendingCount > 0 && (
               <button
                 onClick={() => setActiveView('toolbox')}
@@ -1143,6 +1132,13 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setActiveView('workflows')}
+              title="Open live workstream"
+              className="hidden lg:flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/10 bg-white/5 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white hover:bg-white/10 transition-all"
+            >
+              Workstream
+            </button>
+            <button
               onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
               title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
               className="w-11 h-11 glass rounded-xl flex items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10"
@@ -1151,8 +1147,8 @@ export default function App() {
             </button>
             <button
               onClick={() => setActiveView('toolbox')}
-              title="Open Auxiliary configuration"
-              className="w-11 h-11 glass rounded-xl flex items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10"
+              title="Open tools and system settings"
+              className="hidden sm:flex w-11 h-11 glass rounded-xl items-center justify-center text-zinc-500 hover:text-cyber-blue transition-all border-white/10"
             >
               <Settings2 size={20} />
             </button>

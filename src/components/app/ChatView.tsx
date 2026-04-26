@@ -107,7 +107,7 @@ export function ChatView({
 
               <div className="space-y-4 text-left">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyber-blue">Current Agent</div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.22em] text-cyber-blue">Active Helper</div>
                   <span title={runtimeInfo.detail}>
                     <Badge color={runtimeSurface === 'hosted_limited' ? 'gold' : 'lime'}>{runtimeInfo.short}</Badge>
                   </span>
@@ -132,7 +132,7 @@ export function ChatView({
                       <Zap size={16} className="text-cyber-blue" />
                     </div>
                     <div className="flex items-center gap-3 mb-3 text-cyber-blue/40 group-hover:text-cyber-blue transition-colors">
-                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">System Prompt</span>
+                      <span className="text-[10px] font-black uppercase tracking-[0.18em]">Quick Start</span>
                     </div>
                     <p className="text-sm text-zinc-500 group-hover:text-zinc-100 transition-colors leading-relaxed font-semibold">{prompt}</p>
                   </button>
@@ -151,7 +151,7 @@ export function ChatView({
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tight">{workflowState.workflow.name}</h3>
                     <p className="text-[10px] text-zinc-500 uppercase font-black tracking-[0.2em]">
-                      {workflowState.isRunning ? 'Executing Multi-Agent Pipeline' : 'Autonomous Pipeline Timeline'}
+                      {workflowState.isRunning ? 'Agents Working Now' : 'Agent Work Timeline'}
                     </p>
                   </div>
                 </div>
@@ -163,7 +163,7 @@ export function ChatView({
                     </>
                   ) : (
                     <span className="text-xs font-black text-cyber-lime">
-                      {workflowState.steps.some((step) => step.status === 'failed') ? 'Pipeline halted' : 'Pipeline complete'}
+                      {workflowState.steps.some((step) => step.status === 'failed') ? 'Workflow stopped' : 'Workflow complete'}
                     </span>
                   )}
                 </div>
@@ -283,14 +283,14 @@ export function ChatView({
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           <Sparkles className="text-cyber-lime" size={20} />
-                          <span className="text-xs font-black uppercase tracking-[0.2em] text-cyber-lime">Neural Plan Optimized</span>
+                          <span className="text-xs font-black uppercase tracking-[0.18em] text-cyber-lime">Workflow Ready</span>
                         </div>
                         <Button
                           variant="secondary"
                           className="!py-2 !px-4 !text-[9px] border-cyber-lime/30 text-cyber-lime hover:bg-cyber-lime hover:text-void"
                           onClick={() => executeWorkflow(handoffPlanToWorkflow(msg.handoffPlan))}
                         >
-                          Deploy Pipeline
+                          Start Workflow
                         </Button>
                       </div>
                       <h4 className="text-lg font-black text-white">{msg.handoffPlan.title}</h4>
@@ -464,7 +464,7 @@ export function ChatView({
                     handleSendMessage();
                   }
                 }}
-                placeholder={`Direct ${selectedAgent.name}...`}
+                placeholder={`Ask ${selectedAgent.name}...`}
                 className="flex-1 bg-transparent border-none outline-none resize-none py-6 px-3 text-lg max-h-48 custom-scrollbar font-medium placeholder:text-zinc-700"
                 rows={1}
               />
@@ -494,7 +494,7 @@ export function ChatView({
             <div className="flex items-center gap-8">
               <div className="flex items-center gap-2 group cursor-help">
                 <div className="w-1.5 h-1.5 rounded-full bg-cyber-lime shadow-[0_0_8px_#A3E635] animate-pulse" />
-                Neural Link Active
+                Memory Active
               </div>
               <div className="flex items-center gap-2 group cursor-help">
                 <Database size={12} className="text-zinc-800" />
